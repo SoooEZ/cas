@@ -47,7 +47,7 @@ public class GoogleCloudFirestoreTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket getTicket(final String ticketId, final Predicate<Ticket> predicate) {
+    protected Ticket getSingleTicket(final String ticketId, final Predicate<Ticket> predicate) {
         return FunctionUtils.doUnchecked(() -> {
             LOGGER.debug("Locating ticket [{}]", ticketId);
             val encTicketId = digestIdentifier(ticketId);
@@ -93,7 +93,7 @@ public class GoogleCloudFirestoreTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Collection<? extends Ticket> getTickets() {
+    protected Collection<? extends Ticket> getAllTickets() {
         return ticketCatalog
             .findAll()
             .stream()
@@ -113,7 +113,7 @@ public class GoogleCloudFirestoreTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> stream(final TicketRegistryStreamCriteria criteria) {
+    protected Stream<? extends Ticket> streamTickets(final TicketRegistryStreamCriteria criteria) {
         return ticketCatalog
             .findAll()
             .stream()
@@ -133,7 +133,7 @@ public class GoogleCloudFirestoreTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket updateTicket(final Ticket ticket) {
+    protected Ticket updateSingleTicket(final Ticket ticket) {
         FunctionUtils.doAndHandle(_ -> {
             LOGGER.debug("Updating ticket [{}]", ticket.getId());
             val ticketDocument = buildTicketAsDocument(ticket);
@@ -245,7 +245,7 @@ public class GoogleCloudFirestoreTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsFor(final String principalId) {
+    protected Stream<? extends Ticket> streamSessionsFor(final String principalId) {
         val ticketDefinitions = ticketCatalog.findTicketImplementations(TicketGrantingTicket.class);
         return ticketDefinitions
             .stream()
@@ -280,7 +280,7 @@ public class GoogleCloudFirestoreTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
+    protected Stream<? extends Ticket> streamSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
         val ticketDefinitions = ticketCatalog.findTicketDefinition(TicketGrantingTicket.class);
         return ticketDefinitions
             .stream()

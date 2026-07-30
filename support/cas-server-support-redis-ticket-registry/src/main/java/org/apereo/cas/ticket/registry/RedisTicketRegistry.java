@@ -76,6 +76,10 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
 
     private final RedisKeyValueAdapter redisKeyValueAdapter;
 
+    private final ObjectProvider<TicketRegistryWriteInterceptor> ticketRegistryWriteInterceptors;
+
+    private final ObjectProvider<RedisTicketRegistryWriteExecutor> ticketRegistryWriteExecutors;
+
     public RedisTicketRegistry(final CipherExecutor cipherExecutor,
                                final TicketSerializationManager ticketSerializationManager,
                                final TicketCatalog ticketCatalog,
@@ -95,6 +99,8 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
         this.redisKeyGeneratorFactory = redisKeyGeneratorFactory;
         this.casProperties = casProperties;
         this.redisKeyValueAdapter = redisKeyValueAdapter;
+        this.ticketRegistryWriteInterceptors = applicationContext.getBeanProvider(TicketRegistryWriteInterceptor.class);
+        this.ticketRegistryWriteExecutors = applicationContext.getBeanProvider(RedisTicketRegistryWriteExecutor.class);
         createIndexesIfNecessary();
     }
 
@@ -151,7 +157,11 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
     }
 
     @Override
-    public List<? extends Ticket> addTicket(final Stream<? extends Ticket> toSave) {
+    protected List<? extends Ticket> addTickets(final Stream<? extends Ticket> toSave) {
+        if (ticketRegistryWriteInterceptors.stream().findAny().isPresent()
+            || ticketRegistryWriteExecutors.stream().findAny().isPresent()) {
+            return toSave.map(this::addSingleTicket).toList();
+        }
         return (List) casRedisTemplates.getTicketsRedisTemplate().executePipelined((RedisCallback) connection -> {
             toSave.forEach(this::addSingleTicket);
             return null;
@@ -159,42 +169,75 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
     }
 
     @Override
-    public Ticket addSingleTicket(final Ticket ticket) {
+    protected Ticket addSingleTicket(final Ticket ticket) {
         LOGGER.debug("Adding ticket [{}]", ticket);
-        addOrUpdateTicket(ticket);
-        messagePublisher.ifAvailable(publisher -> publisher.add(ticket));
+        addOrUpdateTicket(ticket, TicketRegistryWriteInterceptor.Operation.ADD);
         return ticket;
     }
 
     @Override
-    public Ticket updateTicket(final Ticket ticket) {
+    protected Ticket addSingleTicket(
+        final Ticket ticket,
+        final TicketIssuanceWriteContext context) {
+        LOGGER.debug("Adding ticket [{}] with explicit issuance context", ticket);
+        addOrUpdateTicket(ticket, TicketRegistryWriteInterceptor.Operation.ADD, context);
+        return ticket;
+    }
+
+    @Override
+    protected Ticket updateSingleTicket(final Ticket ticket) {
         FunctionUtils.doIfNotNull(ticket, _ -> {
             LOGGER.debug("Updating ticket [{}]", ticket);
-            addOrUpdateTicket(ticket);
-            messagePublisher.ifAvailable(p -> p.update(ticket));
+            addOrUpdateTicket(ticket, TicketRegistryWriteInterceptor.Operation.UPDATE);
         });
         return ticket;
     }
 
     @Override
-    public Ticket getTicket(final String ticketId, final Predicate<Ticket> predicate) {
+    protected Ticket updateSingleTicket(
+        final Ticket ticket,
+        final TicketIssuanceWriteContext context) {
+        FunctionUtils.doIfNotNull(ticket, _ -> {
+            LOGGER.debug("Updating ticket [{}] with explicit issuance context", ticket);
+            addOrUpdateTicket(ticket, TicketRegistryWriteInterceptor.Operation.UPDATE, context);
+        });
+        return ticket;
+    }
+
+    @Override
+    protected Ticket getSingleTicket(final String ticketId, final Predicate<Ticket> predicate) {
+        return readSingleTicket(ticketId, predicate, true);
+    }
+
+    @Override
+    protected Ticket getSingleTicketFromSource(
+        final String ticketId,
+        final Predicate<Ticket> predicate) {
+        return readSingleTicket(ticketId, predicate, false);
+    }
+
+    private Ticket readSingleTicket(
+        final String ticketId,
+        final Predicate<Ticket> predicate,
+        final boolean nearCacheAllowed) {
         return FunctionUtils.doAndHandle(() -> {
             val ticketPrefix = StringUtils.substring(ticketId, 0, ticketId.indexOf(UniqueTicketIdGenerator.SEPARATOR));
             val redisKeyGenerator = redisKeyGeneratorFactory.getRedisKeyGenerator(ticketPrefix).orElseThrow();
             val redisTicketsKey = redisKeyGenerator.forPrefixAndId(ticketPrefix, digestIdentifier(ticketId));
-            return getTicketFromRedis(predicate, redisTicketsKey, redisKeyGenerator);
+            return getTicketFromRedis(
+                predicate, redisTicketsKey, redisKeyGenerator, nearCacheAllowed);
         });
     }
 
     @Override
-    public Collection<? extends Ticket> getTickets() {
-        try (val ticketsStream = stream()) {
+    protected Collection<? extends Ticket> getAllTickets() {
+        try (val ticketsStream = streamTickets(TicketRegistryStreamCriteria.builder().build())) {
             return ticketsStream.collect(Collectors.toSet());
         }
     }
 
     @Override
-    public Stream<? extends Ticket> stream(final TicketRegistryStreamCriteria criteria) {
+    protected Stream<? extends Ticket> streamTickets(final TicketRegistryStreamCriteria criteria) {
         return fetchKeysForTickets()
             .skip(criteria.getFrom())
             .limit(criteria.getCount())
@@ -225,7 +268,7 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
 
 
     @Override
-    public Stream<? extends Ticket> getTicketsFor(final Service service) {
+    protected Stream<? extends Ticket> streamTicketsFor(final Service service) {
         return redisModulesOperations
             .stream()
             .map(command -> {
@@ -244,11 +287,11 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
                     .filter(ticket -> !ticket.isExpired());
             })
             .findFirst()
-            .orElseGet(() -> (Stream<Ticket>) super.getTicketsFor(service));
+            .orElseGet(() -> (Stream<Ticket>) super.streamTicketsFor(service));
     }
     
     @Override
-    public Stream<? extends Ticket> getSessionsFor(final String principalId) {
+    protected Stream<? extends Ticket> streamSessionsFor(final String principalId) {
         return redisKeyGeneratorFactory.getRedisKeyGenerator(Principal.class.getName())
             .map(generator -> {
                 val userId = digestIdentifier(principalId);
@@ -393,7 +436,7 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
+    protected Stream<? extends Ticket> streamSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
         return redisModulesOperations
             .stream()
             .map(command -> {
@@ -417,7 +460,7 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
                     .filter(ticket -> !ticket.isExpired());
             })
             .findFirst()
-            .orElseGet(() -> (Stream<Ticket>) super.getSessionsWithAttributes(queryAttributes));
+            .orElseGet(() -> (Stream<Ticket>) super.streamSessionsWithAttributes(queryAttributes));
     }
 
     @Override
@@ -451,7 +494,7 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
     }
 
     @Override
-    public List<? extends Serializable> query(final TicketRegistryQueryCriteria queryCriteria) {
+    protected List<? extends Serializable> queryTickets(final TicketRegistryQueryCriteria queryCriteria) {
         val redisKeyGenerator = redisKeyGeneratorFactory.getRedisKeyGenerator(queryCriteria.getType()).orElseThrow();
         val redisTicketsKey = StringUtils.isNotBlank(queryCriteria.getId())
             ? redisKeyGenerator.forPrefixAndId(queryCriteria.getType(), digestIdentifier(queryCriteria.getId()))
@@ -587,11 +630,22 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
 
     protected @Nullable Ticket getTicketFromRedis(final Predicate<Ticket> predicate, final String redisKeyPattern,
                                                   final RedisKeyGenerator redisKeyGenerator) {
+        return getTicketFromRedis(
+            predicate, redisKeyPattern, redisKeyGenerator, true);
+    }
+
+    private @Nullable Ticket getTicketFromRedis(
+        final Predicate<Ticket> predicate,
+        final String redisKeyPattern,
+        final RedisKeyGenerator redisKeyGenerator,
+        final boolean nearCacheAllowed) {
         val rawTicketId = redisKeyGenerator.rawKey(redisKeyPattern);
-        val cachedTicket = ticketCache.stream()
-            .map(cache -> cache.getIfPresent(rawTicketId))
-            .filter(Objects::nonNull)
-            .findFirst();
+        val cachedTicket = nearCacheAllowed
+            ? ticketCache.stream()
+                .map(cache -> cache.getIfPresent(rawTicketId))
+                .filter(Objects::nonNull)
+                .findFirst()
+            : Optional.<Ticket>empty();
 
         val ticket = cachedTicket
             .map(this::decodeTicket)
@@ -623,7 +677,108 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
         return null;
     }
 
-    private void addOrUpdateTicket(final Ticket ticket) {
+    private void addOrUpdateTicket(final Ticket ticket,
+                                   final TicketRegistryWriteInterceptor.Operation operation) {
+        addOrUpdateTicket(ticket, operation, Optional.empty());
+    }
+
+    private void addOrUpdateTicket(
+        final Ticket ticket,
+        final TicketRegistryWriteInterceptor.Operation operation,
+        final TicketIssuanceWriteContext context) {
+        addOrUpdateTicket(ticket, operation, Optional.of(Objects.requireNonNull(context, "context")));
+    }
+
+    private void addOrUpdateTicket(
+        final Ticket ticket,
+        final TicketRegistryWriteInterceptor.Operation operation,
+        final Optional<TicketIssuanceWriteContext> issuanceContext) {
+        val contexts = new ArrayList<TicketRegistryWriteInterceptor.WriteContext>();
+        try {
+            ticketRegistryWriteInterceptors.orderedStream().forEach(interceptor -> {
+                val writeContext = issuanceContext.isPresent()
+                    ? interceptor.beforeWrite(ticket, operation, issuanceContext.orElseThrow())
+                    : interceptor.beforeWrite(ticket, operation);
+                contexts.add(Objects.requireNonNull(writeContext));
+            });
+        } catch (final Throwable cause) {
+            notifyWriteFailure(contexts, ticket, cause, issuanceContext);
+            throw rethrowUnchecked(cause);
+        }
+        val receipt = writeTicketAndPublish(
+            ticket, operation, issuanceContext, contexts);
+        Throwable callbackFailure = null;
+        for (var index = contexts.size() - 1; index >= 0; index--) {
+            try {
+                if (issuanceContext.isPresent()) {
+                    contexts.get(index).succeeded(ticket, receipt, issuanceContext.orElseThrow());
+                } else {
+                    contexts.get(index).succeeded(ticket, receipt);
+                }
+            } catch (final Throwable cause) {
+                if (callbackFailure == null) {
+                    callbackFailure = cause;
+                } else {
+                    callbackFailure.addSuppressed(cause);
+                }
+            }
+        }
+        if (callbackFailure != null) {
+            throw new TicketRegistryWriteCompletionException(ticket.getId(), operation, callbackFailure);
+        }
+    }
+
+    private TicketRegistryWriteReceipt writeTicketAndPublish(
+        final Ticket ticket,
+        final TicketRegistryWriteInterceptor.Operation operation,
+        final Optional<TicketIssuanceWriteContext> issuanceContext,
+        final List<TicketRegistryWriteInterceptor.WriteContext> contexts) {
+        try {
+            val receipt = writeTicket(ticket, operation, issuanceContext);
+            messagePublisher.ifAvailable(publisher -> {
+                switch (operation) {
+                    case ADD -> publisher.add(ticket);
+                    case UPDATE -> publisher.update(ticket);
+                }
+            });
+            return receipt;
+        } catch (final Throwable cause) {
+            notifyWriteFailure(contexts, ticket, cause, issuanceContext);
+            throw rethrowUnchecked(cause);
+        }
+    }
+
+    private static void notifyWriteFailure(
+        final List<TicketRegistryWriteInterceptor.WriteContext> contexts,
+        final Ticket ticket,
+        final Throwable cause,
+        final Optional<TicketIssuanceWriteContext> issuanceContext) {
+        for (var index = contexts.size() - 1; index >= 0; index--) {
+            try {
+                if (issuanceContext.isPresent()) {
+                    contexts.get(index).failed(ticket, cause, issuanceContext.orElseThrow());
+                } else {
+                    contexts.get(index).failed(ticket, cause);
+                }
+            } catch (final Throwable callbackFailure) {
+                cause.addSuppressed(callbackFailure);
+            }
+        }
+    }
+
+    private static RuntimeException rethrowUnchecked(final Throwable cause) {
+        if (cause instanceof final RuntimeException runtimeException) {
+            return runtimeException;
+        }
+        if (cause instanceof final Error error) {
+            throw error;
+        }
+        return new IllegalStateException("Ticket-registry callback raised a checked exception", cause);
+    }
+
+    private TicketRegistryWriteReceipt writeTicket(final Ticket ticket,
+                                                    final TicketRegistryWriteInterceptor.Operation operation,
+                                                    final Optional<TicketIssuanceWriteContext> issuanceContext) {
         val digestedId = digestIdentifier(ticket.getId());
         val redisKeyGenerator = redisKeyGeneratorFactory.getRedisKeyGenerator(ticket.getPrefix()).orElseThrow();
         val redisKeyPattern = redisKeyGenerator.forPrefixAndId(ticket.getPrefix(), digestedId);
@@ -631,21 +786,49 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
         val timeout = RedisKeyGenerator.getTicketExpirationInSeconds(ticket);
         val ticketDocument = buildTicketAsDocument(ticket);
 
-        val valueOps = casRedisTemplates.getTicketsRedisTemplate().boundValueOps(redisKeyPattern);
-        valueOps.set(ticketDocument, Expiration.from(timeout, TimeUnit.SECONDS));
-
         val keyspace = redisKeyGenerator.getKeyspace();
         val redisDataItem = new RedisData();
         redisKeyValueAdapter.getConverter().write(ticketDocument, redisDataItem);
         redisDataItem.setKeyspace(keyspace);
         redisDataItem.setTimeToLive(timeout, TimeUnit.SECONDS);
 
-        redisKeyValueAdapter.put(ticketDocument.ticketId(), redisDataItem, keyspace);
+        val expiresAt = ticket.getExpirationPolicy() instanceof final IdleExpirationPolicy idleExpirationPolicy
+            ? idleExpirationPolicy.getIdleExpirationTime(ticket).toInstant()
+            : Instant.now(Clock.systemUTC()).plusSeconds(timeout);
+        val command = new RedisTicketRegistryWriteExecutor.WriteCommand(ticket, operation,
+            redisKeyPattern, keyspace, ticketDocument.ticketId(), timeout,
+            expiresAt.toEpochMilli(), redisDataItem, issuanceContext);
+        val defaultPersistence = (Runnable) () -> persistTicket(command, ticketDocument);
+        val executors = ticketRegistryWriteExecutors.orderedStream().limit(2).toList();
+        if (executors.size() > 1) {
+            throw new IllegalStateException("Only one RedisTicketRegistryWriteExecutor may be registered");
+        }
+        val receipt = executors.isEmpty()
+            ? executeDefaultPersistence(defaultPersistence)
+            : Objects.requireNonNull(
+                executors.getFirst().execute(command, defaultPersistence),
+                "Redis ticket write executor receipt");
+
         configureTicketExpirationInstant(ticket, redisKeyPattern);
         ticketCache.ifAvailable(cache -> cache.put(digestedId, ticket));
 
         redisKeyGeneratorFactory.getRedisKeyGenerator(Principal.class.getName())
             .ifPresent(generator -> trackAuthenticationPrincipal(ticket));
+        return receipt;
+    }
+
+    private static TicketRegistryWriteReceipt executeDefaultPersistence(
+        final Runnable defaultPersistence) {
+        defaultPersistence.run();
+        return TicketRegistryWriteReceipt.unsequenced("ticket-redis");
+    }
+
+    private void persistTicket(final RedisTicketRegistryWriteExecutor.WriteCommand command,
+                               final RedisTicketDocument ticketDocument) {
+        val valueOps = casRedisTemplates.getTicketsRedisTemplate().boundValueOps(command.redisKey());
+        valueOps.set(ticketDocument, Expiration.from(command.timeToLiveSeconds(), TimeUnit.SECONDS));
+
+        redisKeyValueAdapter.put(command.documentId(), command.redisData(), command.keyspace());
     }
 
     protected void trackAuthenticationPrincipal(final Ticket ticket) {

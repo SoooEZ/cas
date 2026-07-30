@@ -54,12 +54,12 @@ public class HazelcastTicketRegistry extends AbstractTicketRegistry implements A
     }
 
     @Override
-    public Ticket updateTicket(final Ticket ticket) throws Exception {
-        return addTicket(ticket);
+    protected Ticket updateSingleTicket(final Ticket ticket) throws Exception {
+        return addSingleTicket(ticket);
     }
 
     @Override
-    public Ticket addSingleTicket(final Ticket ticket) throws Exception {
+    protected Ticket addSingleTicket(final Ticket ticket) throws Exception {
         var ttl = ticket.getExpirationPolicy().getTimeToLive();
         /*
          * Valid values are integers between 0 and Integer.MAX_VALUE. Its default value is 0,
@@ -98,7 +98,7 @@ public class HazelcastTicketRegistry extends AbstractTicketRegistry implements A
     }
 
     @Override
-    public Ticket getTicket(final String ticketId, final Predicate<Ticket> predicate) {
+    protected Ticket getSingleTicket(final String ticketId, final Predicate<Ticket> predicate) {
         val encTicketId = digestIdentifier(ticketId);
         if (StringUtils.isBlank(encTicketId)) {
             return null;
@@ -146,8 +146,8 @@ public class HazelcastTicketRegistry extends AbstractTicketRegistry implements A
     }
 
     @Override
-    public Collection<? extends Ticket> getTickets() {
-        return stream().collect(Collectors.toSet());
+    protected Collection<? extends Ticket> getAllTickets() {
+        return streamTickets(TicketRegistryStreamCriteria.builder().build()).collect(Collectors.toSet());
     }
 
     @Override
@@ -235,7 +235,7 @@ public class HazelcastTicketRegistry extends AbstractTicketRegistry implements A
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
+    protected Stream<? extends Ticket> streamSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
         if (properties.getCore().isEnableJet()) {
             val md = ticketCatalog.find(TicketGrantingTicket.PREFIX);
             val ticketMapInstance = getTicketMapInstance(md.getProperties().getStorageName());
@@ -257,11 +257,11 @@ public class HazelcastTicketRegistry extends AbstractTicketRegistry implements A
                 .map(row -> decodeTicket(row.getTicket()))
                 .filter(ticket -> !ticket.isExpired());
         }
-        return super.getSessionsWithAttributes(queryAttributes);
+        return super.streamSessionsWithAttributes(queryAttributes);
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsFor(final String principalId) {
+    protected Stream<? extends Ticket> streamSessionsFor(final String principalId) {
         if (properties.getCore().isEnableJet()) {
             val md = ticketCatalog.find(TicketGrantingTicket.PREFIX);
             val sql = String.format("SELECT * FROM %s WHERE principal=?", md.getProperties().getStorageName());
@@ -290,7 +290,7 @@ public class HazelcastTicketRegistry extends AbstractTicketRegistry implements A
     }
 
     @Override
-    public Stream<? extends Ticket> stream(final TicketRegistryStreamCriteria criteria) {
+    protected Stream<? extends Ticket> streamTickets(final TicketRegistryStreamCriteria criteria) {
         return ticketCatalog
             .findAll()
             .stream()

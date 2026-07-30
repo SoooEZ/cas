@@ -4,6 +4,7 @@ import org.apereo.cas.gradle.CasBuildSettings
 import org.apereo.cas.gradle.CasProjectConventions
 
 description = "Generates CAS documentation metadata from configuration and source annotations."
+def casProjectGroup = CasBuildSettings.projectGroup(project)
 
 ext {
     mainClassName = "org.apereo.cas.documentation.CasDocumentationApplication"
@@ -59,11 +60,7 @@ tasks.register('jsonDependencies') {
     doLast {
         def rcp = configurations.runtimeClasspath.resolvedConfiguration
         def results = rcp.firstLevelModuleDependencies
-            .findAll { dependency ->
-                {
-                    !dependency.module.id.group.startsWith("org.apereo.cas")
-                }
-            }
+            .findAll { dependency -> dependency.module.id.group != casProjectGroup }
             .sort(dependency -> dependency.module.id.group + "/" + dependency.module.id.name)
             .stream()
             .map(dependency -> [group: dependency.module.id.group, name: dependency.module.id.name, version: dependency.module.id.version])

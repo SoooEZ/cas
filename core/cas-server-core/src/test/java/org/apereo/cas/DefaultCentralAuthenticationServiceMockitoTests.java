@@ -33,6 +33,7 @@ import org.apereo.cas.ticket.ServiceTicket;
 import org.apereo.cas.ticket.TicketFactory;
 import org.apereo.cas.ticket.TicketGrantingTicket;
 import org.apereo.cas.ticket.expiration.AlwaysExpiresExpirationPolicy;
+import org.apereo.cas.ticket.expiration.MultiTimeUseOrTimeoutExpirationPolicy;
 import org.apereo.cas.ticket.expiration.NeverExpiresExpirationPolicy;
 import org.apereo.cas.ticket.registry.TicketRegistry;
 import org.apereo.cas.util.RandomUtils;
@@ -153,6 +154,11 @@ class DefaultCentralAuthenticationServiceMockitoTests extends BaseCasCoreTests {
 
         addServices(service1, service2);
 
+        cas = createCentralAuthenticationService(ticketRegistry, LockRepository.asDefault());
+    }
+
+    private CentralAuthenticationService createCentralAuthenticationService(
+        final TicketRegistry registry, final LockRepository lockRepository) throws Throwable {
         val authenticationRequestServiceSelectionStrategies =
             new DefaultAuthenticationServiceSelectionPlan(new DefaultAuthenticationServiceSelectionStrategy());
         val enforcer = mock(AuditableExecution.class);
@@ -160,10 +166,10 @@ class DefaultCentralAuthenticationServiceMockitoTests extends BaseCasCoreTests {
 
         val context = CentralAuthenticationServiceContext.builder()
             .applicationContext(applicationContext)
-            .ticketRegistry(ticketRegistry)
+            .ticketRegistry(registry)
             .servicesManager(servicesManager)
             .ticketFactory(ticketFactory)
-            .lockRepository(LockRepository.asDefault())
+            .lockRepository(lockRepository)
             .authenticationServiceSelectionPlan(authenticationRequestServiceSelectionStrategies)
             .authenticationPolicy(new AtLeastOneCredentialValidatedAuthenticationPolicy(false))
             .principalFactory(PrincipalFactoryUtils.newPrincipalFactory())
@@ -171,8 +177,9 @@ class DefaultCentralAuthenticationServiceMockitoTests extends BaseCasCoreTests {
             .registeredServiceAccessStrategyEnforcer(enforcer)
             .serviceMatchingStrategy(new DefaultServiceMatchingStrategy(servicesManager))
             .principalResolver(principalResolver)
+            .tenantExtractor(tenantExtractor)
             .build();
-        cas = new DefaultCentralAuthenticationService(context);
+        return new DefaultCentralAuthenticationService(context);
     }
 
     @Test
@@ -205,6 +212,136 @@ class DefaultCentralAuthenticationServiceMockitoTests extends BaseCasCoreTests {
         assertSame(2, assertion.getChainedAuthentications().size());
         IntStream.range(0, assertion.getChainedAuthentications().size())
             .forEach(i -> assertEquals(assertion.getChainedAuthentications().get(i), authentication));
+    }
+
+    @Test
+    void verifyValidationReadsAuthoritativeTicketInsideLock() throws Throwable {
+        val currentTicket = Objects.requireNonNull(ticketRegistry.getTicket(serviceTicketId, ServiceTicket.class));
+        val staleTicket = createMockServiceTicket(serviceTicketId, currentTicket.getService());
+        staleTicket.setTicketGrantingTicket((TicketGrantingTicket) currentTicket.getTicketGrantingTicket());
+        staleTicket.setExpired(true);
+
+        val insideLock = new AtomicBoolean();
+        val registry = mock(TicketRegistry.class);
+        when(registry.getTicketFromSource(serviceTicketId, ServiceTicket.class))
+            .thenAnswer(invocation -> insideLock.get() ? currentTicket : staleTicket);
+        when(registry.updateTicket(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        val lockingCas = createCentralAuthenticationService(
+            registry, trackingLockRepository(serviceTicketId, insideLock));
+        val assertion = lockingCas.validateServiceTicket(serviceTicketId, currentTicket.getService());
+
+        assertNotNull(assertion);
+        verify(registry, times(1))
+            .getTicketFromSource(serviceTicketId, ServiceTicket.class);
+        verify(registry, times(1)).updateTicket(currentTicket);
+    }
+
+    @Test
+    void verifySuccessfulNonExpiringValidationWritesOnce() throws Throwable {
+        val currentTicket = spy(Objects.requireNonNull(ticketRegistry.getTicket(serviceTicketId, ServiceTicket.class)));
+        val registry = mock(TicketRegistry.class);
+        when(registry.getTicketFromSource(serviceTicketId, ServiceTicket.class))
+            .thenReturn(currentTicket);
+        when(registry.updateTicket(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        val lockingCas = createCentralAuthenticationService(registry, LockRepository.asDefault());
+        assertNotNull(lockingCas.validateServiceTicket(serviceTicketId, currentTicket.getService()));
+
+        verify(currentTicket, times(1)).update();
+        verify(registry, times(1)).updateTicket(currentTicket);
+        verify(registry, never()).deleteTicket(anyString());
+    }
+
+    @Test
+    void verifySingleUseServiceTicketCannotBeValidatedConcurrently() throws Throwable {
+        val currentTicket = Objects.requireNonNull(ticketRegistry.getTicket(serviceTicketId, ServiceTicket.class));
+        val service = currentTicket.getService();
+        val ticketGrantingTicket = (TicketGrantingTicket) currentTicket.getTicketGrantingTicket();
+        val ticketStored = new AtomicBoolean(true);
+        val registry = mock(TicketRegistry.class);
+        when(registry.getTicketFromSource(serviceTicketId, ServiceTicket.class))
+            .thenAnswer(invocation -> {
+                if (!ticketStored.get()) {
+                    return null;
+                }
+                return new org.apereo.cas.ticket.ServiceTicketImpl(
+                    serviceTicketId,
+                    ticketGrantingTicket,
+                    service,
+                    false,
+                    new MultiTimeUseOrTimeoutExpirationPolicy.ServiceTicketExpirationPolicy(1, 60));
+            });
+        when(registry.updateTicket(any())).thenAnswer(invocation -> {
+            ticketStored.set(true);
+            return invocation.getArgument(0);
+        });
+        when(registry.deleteTicket(serviceTicketId)).thenAnswer(invocation -> {
+            ticketStored.set(false);
+            return 1;
+        });
+
+        val contenders = new CyclicBarrier(2);
+        val delegate = LockRepository.asDefault();
+        val lockRepository = new LockRepository() {
+            @Override
+            public <T> Optional<T> execute(final Object lockKey, final Supplier<T> consumer) {
+                try {
+                    contenders.await(10, TimeUnit.SECONDS);
+                } catch (final Exception e) {
+                    throw new IllegalStateException(e);
+                }
+                return delegate.execute(lockKey, consumer);
+            }
+        };
+        val lockingCas = createCentralAuthenticationService(registry, lockRepository);
+        val successfulValidations = new AtomicInteger();
+        val rejectedValidations = new AtomicInteger();
+        val unexpectedFailures = new CopyOnWriteArrayList<Throwable>();
+        val start = new CountDownLatch(1);
+        val validate = (Runnable) () -> {
+            try {
+                assertTrue(start.await(10, TimeUnit.SECONDS));
+                lockingCas.validateServiceTicket(serviceTicketId, service);
+                successfulValidations.incrementAndGet();
+            } catch (final InvalidTicketException e) {
+                rejectedValidations.incrementAndGet();
+            } catch (final Throwable e) {
+                unexpectedFailures.add(e);
+            }
+        };
+        val first = new Thread(validate, "service-ticket-validator-1");
+        val second = new Thread(validate, "service-ticket-validator-2");
+        first.start();
+        second.start();
+        start.countDown();
+        first.join(TimeUnit.SECONDS.toMillis(15));
+        second.join(TimeUnit.SECONDS.toMillis(15));
+
+        assertAll(
+            () -> assertFalse(first.isAlive()),
+            () -> assertFalse(second.isAlive()),
+            () -> assertTrue(unexpectedFailures.isEmpty(), unexpectedFailures::toString),
+            () -> assertEquals(1, successfulValidations.get()),
+            () -> assertEquals(1, rejectedValidations.get()),
+            () -> verify(registry, times(1)).deleteTicket(serviceTicketId),
+            () -> verify(registry, never()).updateTicket(any()));
+    }
+
+    private static LockRepository trackingLockRepository(
+        final String expectedLockKey, final AtomicBoolean insideLock) {
+        return new LockRepository() {
+            @Override
+            public <T> Optional<T> execute(final Object lockKey, final Supplier<T> consumer) {
+                assertEquals(expectedLockKey, lockKey);
+                assertTrue(insideLock.compareAndSet(false, true));
+                try {
+                    return Optional.ofNullable(consumer.get());
+                } finally {
+                    insideLock.set(false);
+                }
+            }
+        };
     }
 
     private AuthenticationResult getAuthenticationContext() {

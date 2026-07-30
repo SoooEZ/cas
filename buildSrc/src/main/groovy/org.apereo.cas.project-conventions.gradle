@@ -24,6 +24,10 @@ project.pluginManager.apply('org.apereo.cas.tests-conventions')
 
 ext.libraries = CasBuildSettings.libraries
 
+def casIdpForkPublish = providers.systemProperty('casIdpForkPublish')
+    .map(String::toBoolean)
+    .getOrElse(false)
+
 configurations {
     tests
     provided
@@ -37,9 +41,45 @@ if (CasProjectConventions.shouldBePublished(project)) {
     logger.info "Project ${project.name} should be published"
     
     publishing {
+        if (casIdpForkPublish) {
+            def forkRepositoryUri = uri(providers.systemProperty('casIdpForkRepositoryUrl')
+                .getOrElse('https://maven.pkg.github.com/SoooEZ/cas'))
+            if (!(forkRepositoryUri.scheme in ['file', 'https'])) {
+                throw new GradleException(
+                    "CAS-IDP fork publication repository must use file or https, not ${forkRepositoryUri.scheme}"
+                )
+            }
+            repositories {
+                maven {
+                    name = 'casIdpFork'
+                    url = forkRepositoryUri
+                    if (forkRepositoryUri.scheme == 'https') {
+                        credentials {
+                            username = providers.systemProperty('casIdpForkRepositoryUser')
+                                .getOrElse(System.getenv('GITHUB_ACTOR') ?: '')
+                            password = providers.systemProperty('casIdpForkRepositoryToken')
+                                .getOrElse(System.getenv('GITHUB_TOKEN') ?: '')
+                        }
+                    }
+                }
+            }
+        }
         publications {
             if (project.hasProperty('skipPublication') && project.skipPublication) {
                 logger.info "Skipping artifact publication for project ${project.name}"
+            } else if (plugins.hasPlugin('war')) {
+                logger.info "Project ${project.name} should be published as a WAR"
+
+                create('mavenWeb', MavenPublication) {
+                    from components.web
+
+                    pom {
+                        CasPomConfiguration.createPom(it, project)
+                    }
+                    pom.withXml {
+                        CasPomConfiguration.createPomRepositories(asNode(), casIdpForkPublish)
+                    }
+                }
             } else {
                 logger.info "Project ${project.name} should be published as a JAR"
 
@@ -61,7 +101,7 @@ if (CasProjectConventions.shouldBePublished(project)) {
                         CasPomConfiguration.createPom(it, project)
                     }
                     pom.withXml {
-                        CasPomConfiguration.createPomRepositories(asNode())
+                        CasPomConfiguration.createPomRepositories(asNode(), casIdpForkPublish)
                     }
                 }
 
@@ -70,26 +110,19 @@ if (CasProjectConventions.shouldBePublished(project)) {
     }
 
     plugins.withId('war') {
-        if (!project.hasProperty('skipPublication') || !project.skipPublication) {
-            logger.info "Project ${project.name} should be published as a WAR"
-
-            publishing.publications.remove(publishing.publications.findByName('mavenJava'))
-            publishing.publications.create('mavenWeb', MavenPublication) {
-                from components.web
-
-                pom {
-                    CasPomConfiguration.createPom(it, project)
-                }
-                pom.withXml {
-                    CasPomConfiguration.createPomRepositories(asNode())
-                }
-            }
+        def skipPublication = project.hasProperty('skipPublication') && project.skipPublication
+        if (!skipPublication && (publishing.publications.findByName('mavenJava') != null
+            || publishing.publications.findByName('mavenWeb') == null)) {
+            throw new GradleException(
+                "WAR plugin must be applied before project conventions so ${project.path} has only a mavenWeb publication"
+            )
         }
     }
 
     plugins.withId('maven-publish') {
         signing {
-            required = project.publishReleases && !project.skipArtifactSigning
+            required = (project.publishReleases || casIdpForkPublish)
+                && !project.skipArtifactSigning
 
             if (System.getenv('PGP_PRIVATE_KEY') && System.getenv('PGP_PASSPHRASE')) {
                 useInMemoryPgpKeys(
@@ -106,7 +139,7 @@ if (CasProjectConventions.shouldBePublished(project)) {
 }
 
 tasks.named('assemble') {
-    if (publishFlag && !publishMinimalArtifacts) {
+    if (artifactReleaseBuild && !publishMinimalArtifacts) {
         dependsOn(sourcesJar, javadocJar, resourcesJar, testJar)
     } else {
         dependsOn(testJar)
@@ -299,6 +332,3 @@ if (!skipErrorProneCompiler) {
         onlyNullMarked = true
     }
 }
-
-
-

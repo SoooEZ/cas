@@ -159,7 +159,7 @@ final class CasPomConfiguration {
         }
     }
 
-    static void createPomRepositories(final node) {
+    static void createPomRepositories(final node, final boolean forkRelease) {
         def repositories = node.appendNode("repositories")
 
         def repository = repositories.appendNode("repository")
@@ -174,17 +174,19 @@ final class CasPomConfiguration {
         repository.appendNode("releases").appendNode("enabled", "true")
         repository.appendNode("snapshots").appendNode("enabled", "false")
 
-        repository = repositories.appendNode("repository")
-        repository.appendNode("id", "shib-snapshots")
-        repository.appendNode("url", "https://build.shibboleth.net/maven/snapshots/")
-        repository.appendNode("releases").appendNode("enabled", "false")
-        repository.appendNode("snapshots").appendNode("enabled", "true")
+        if (!forkRelease) {
+            repository = repositories.appendNode("repository")
+            repository.appendNode("id", "shib-snapshots")
+            repository.appendNode("url", "https://build.shibboleth.net/maven/snapshots/")
+            repository.appendNode("releases").appendNode("enabled", "false")
+            repository.appendNode("snapshots").appendNode("enabled", "true")
 
-        repository = repositories.appendNode("repository")
-        repository.appendNode("id", "sonatype-snapshot")
-        repository.appendNode("url", "https://central.sonatype.com/repository/maven-snapshots")
-        repository.appendNode("snapshots").appendNode("enabled", "true")
-        repository.appendNode("releases").appendNode("enabled", "false")
+            repository = repositories.appendNode("repository")
+            repository.appendNode("id", "sonatype-snapshot")
+            repository.appendNode("url", "https://central.sonatype.com/repository/maven-snapshots")
+            repository.appendNode("snapshots").appendNode("enabled", "true")
+            repository.appendNode("releases").appendNode("enabled", "false")
+        }
 
         repository = repositories.appendNode("repository")
         repository.appendNode("id", "spring-milestone")
@@ -193,5 +195,4 @@ final class CasPomConfiguration {
         repository.appendNode("releases").appendNode("enabled", "true")
     }
 }
-
 

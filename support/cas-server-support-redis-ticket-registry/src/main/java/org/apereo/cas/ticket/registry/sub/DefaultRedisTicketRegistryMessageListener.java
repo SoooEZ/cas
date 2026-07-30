@@ -3,14 +3,12 @@ package org.apereo.cas.ticket.registry.sub;
 import module java.base;
 import org.apereo.cas.ticket.Ticket;
 import org.apereo.cas.ticket.registry.TicketRegistry;
-import org.apereo.cas.ticket.registry.key.RedisKeyGeneratorFactory;
 import org.apereo.cas.ticket.registry.pub.RedisMessagePayload;
 import org.apereo.cas.util.PublisherIdentifier;
 import com.github.benmanes.caffeine.cache.Cache;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
-import org.jspecify.annotations.Nullable;
 
 /**
  * This is {@link DefaultRedisTicketRegistryMessageListener}.
@@ -23,7 +21,6 @@ import org.jspecify.annotations.Nullable;
 public class DefaultRedisTicketRegistryMessageListener implements RedisTicketRegistryMessageListener {
     private final TicketRegistry ticketRegistry;
     private final PublisherIdentifier publisherIdentifier;
-    private final RedisKeyGeneratorFactory redisKeyGeneratorFactory;
     private final Cache<String, Ticket> ticketCache;
 
     @Override
@@ -33,7 +30,7 @@ public class DefaultRedisTicketRegistryMessageListener implements RedisTicketReg
             switch (command.getMessageType()) {
                 case ADD, UPDATE -> {
                     val result = getMessageResultForAddOrUpdate(command);
-                    ticketCache.put(result.cacheKey(), Objects.requireNonNull(result.ticket()));
+                    ticketCache.invalidate(result.cacheKey());
                 }
                 case DELETE -> {
                     val result = getMessageResultForDelete(command);
@@ -47,16 +44,14 @@ public class DefaultRedisTicketRegistryMessageListener implements RedisTicketReg
     private MessageResult getMessageResultForAddOrUpdate(final RedisMessagePayload command) {
         val ticket = Objects.requireNonNull((Ticket) command.getTicket(),
             "Redis message payload is missing the ticket to add/update in the cache");
-        val generator = redisKeyGeneratorFactory.getRedisKeyGenerator(ticket.getPrefix()).orElseThrow();
-        val redisKey = generator.forPrefixAndId(ticket.getPrefix(), ticket.getId());
         val cacheKey = ticketRegistry.digestIdentifier(ticket.getId());
-        return new MessageResult(ticket, redisKey, cacheKey);
+        return new MessageResult(cacheKey);
     }
 
     private static MessageResult getMessageResultForDelete(final RedisMessagePayload command) {
-        return new MessageResult((Ticket) command.getTicket(), command.getRedisKey(), command.getCacheKey());
+        return new MessageResult(command.getCacheKey());
     }
 
-    private record MessageResult(@Nullable Ticket ticket, String redisKey, String cacheKey) {
+    private record MessageResult(String cacheKey) {
     }
 }

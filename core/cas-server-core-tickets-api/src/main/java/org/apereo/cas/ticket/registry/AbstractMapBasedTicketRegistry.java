@@ -44,7 +44,7 @@ public abstract class AbstractMapBasedTicketRegistry extends AbstractTicketRegis
     }
 
     @Override
-    public Ticket getTicket(final String ticketId, final Predicate<Ticket> predicate) {
+    protected Ticket getSingleTicket(final String ticketId, final Predicate<Ticket> predicate) {
         val encTicketId = digestIdentifier(ticketId);
         if (StringUtils.isBlank(ticketId)) {
             return null;
@@ -73,13 +73,13 @@ public abstract class AbstractMapBasedTicketRegistry extends AbstractTicketRegis
     }
 
     @Override
-    public Collection<? extends Ticket> getTickets() {
+    protected Collection<? extends Ticket> getAllTickets() {
         return decodeTickets(getMapInstance().values());
     }
 
     @Override
-    public Ticket updateTicket(final Ticket ticket) throws Exception {
-        val result = updateTicketInQueue(ticket);
+    protected Ticket updateSingleTicket(final Ticket ticket) throws Exception {
+        val result = writeTicketToQueue(ticket);
 
         if (ticketPublisher.isEnabled()) {
             LOGGER.trace("Publishing update command for id [{}] and ticket [{}]", publisherIdentifier, ticket.getId());
@@ -100,8 +100,8 @@ public abstract class AbstractMapBasedTicketRegistry extends AbstractTicketRegis
     }
 
     @Override
-    public Ticket addSingleTicket(final Ticket ticket) throws Exception {
-        addTicketToQueue(ticket);
+    protected Ticket addSingleTicket(final Ticket ticket) throws Exception {
+        writeTicketToQueue(ticket);
 
         if (ticketPublisher.isEnabled()) {
             LOGGER.trace("Publishing add command for id [{}] and ticket [{}]", publisherIdentifier, ticket.getId());
@@ -113,16 +113,28 @@ public abstract class AbstractMapBasedTicketRegistry extends AbstractTicketRegis
 
     @Override
     public void addTicketToQueue(final Ticket ticket) throws Exception {
+        if (ticket == null || ticket.isExpired()) {
+            return;
+        }
+        prepareTicketForWrite(ticket, TicketIssuancePolicy.Operation.ADD);
+        writeTicketToQueue(ticket);
+    }
+
+    private Ticket writeTicketToQueue(final Ticket ticket) throws Exception {
         val encTicket = encodeTicket(ticket);
         LOGGER.debug("Putting ticket [{}] in registry.", ticket.getId());
         getMapInstance().put(encTicket.getId(), encTicket);
+        return ticket;
     }
 
     @Override
     public Ticket updateTicketInQueue(final Ticket ticket) throws Exception {
+        if (ticket == null || ticket.isExpired()) {
+            return null;
+        }
+        prepareTicketForWrite(ticket, TicketIssuancePolicy.Operation.UPDATE);
         LOGGER.trace("Updating ticket [{}] in registry...", ticket.getId());
-        addTicket(ticket);
-        return ticket;
+        return writeTicketToQueue(ticket);
     }
 
     @Override
@@ -139,7 +151,7 @@ public abstract class AbstractMapBasedTicketRegistry extends AbstractTicketRegis
     }
 
     @Override
-    public List<? extends Serializable> query(final TicketRegistryQueryCriteria criteria) {
+    protected List<? extends Serializable> queryTickets(final TicketRegistryQueryCriteria criteria) {
         return getMapInstance()
             .values()
             .parallelStream()

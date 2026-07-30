@@ -20,6 +20,7 @@ import org.apereo.cas.services.ServicesManager;
 import org.apereo.cas.services.UnauthorizedServiceException;
 import org.apereo.cas.ticket.AuthenticationAwareTicket;
 import org.apereo.cas.ticket.Ticket;
+import org.apereo.cas.ticket.registry.TicketIssuanceMetadata;
 import org.apereo.cas.ticket.registry.TicketRegistrySupport;
 import org.apereo.cas.util.CollectionUtils;
 import org.apereo.cas.util.LoggingUtils;
@@ -91,6 +92,12 @@ public class WebUtils {
     private static final String PARAMETER_CREDENTIAL = "credential";
 
     private static final String PARAMETER_SERVICE_TICKET_ID = "serviceTicketId";
+
+    private static final String PARAMETER_SERVICE_TICKET_ISSUANCE_METADATA =
+        "serviceTicketIssuanceMetadata";
+
+    private static final String PARAMETER_TICKET_GRANTING_TICKET_ISSUANCE_METADATA =
+        "ticketGrantingTicketIssuanceMetadata";
 
     private static final String PARAMETER_LOGOUT_REQUESTS = "logoutRequests";
 
@@ -219,6 +226,8 @@ public class WebUtils {
      */
     public static void putTicketGrantingTicket(final RequestContext context, final Ticket ticket) {
         context.getFlowScope().put("ticketGrantingTicket", ticket);
+        putTicketIssuanceMetadataIntoMap(context.getFlowScope(),
+            PARAMETER_TICKET_GRANTING_TICKET_ISSUANCE_METADATA, ticket);
     }
 
     /**
@@ -238,9 +247,17 @@ public class WebUtils {
      * @param ticket  the ticket value
      */
     public static void putTicketGrantingTicketInScopes(final RequestContext context, final Ticket ticket) {
-        putTicketGrantingTicket(context, ticket);
         val ticketValue = Optional.ofNullable(ticket).map(Ticket::getId).orElse(null);
         putTicketGrantingTicketInScopes(context, ticketValue);
+        putTicketGrantingTicket(context, ticket);
+        putTicketIssuanceMetadataIntoMap(context.getRequestScope(),
+            PARAMETER_TICKET_GRANTING_TICKET_ISSUANCE_METADATA, ticket);
+        var session = context.getFlowExecutionContext().getActiveSession().getParent();
+        while (session != null) {
+            putTicketIssuanceMetadataIntoMap(session.getScope(),
+                PARAMETER_TICKET_GRANTING_TICKET_ISSUANCE_METADATA, ticket);
+            session = session.getParent();
+        }
     }
 
     /**
@@ -252,12 +269,32 @@ public class WebUtils {
     public static void putTicketGrantingTicketInScopes(final RequestContext context, final @Nullable String ticketValue) {
         putTicketGrantingTicketIntoMap(context.getRequestScope(), ticketValue);
         putTicketGrantingTicketIntoMap(context.getFlowScope(), ticketValue);
+        context.getRequestScope().remove(PARAMETER_TICKET_GRANTING_TICKET_ISSUANCE_METADATA);
+        context.getFlowScope().remove(PARAMETER_TICKET_GRANTING_TICKET_ISSUANCE_METADATA);
 
         var session = context.getFlowExecutionContext().getActiveSession().getParent();
         while (session != null) {
             putTicketGrantingTicketIntoMap(session.getScope(), ticketValue);
+            session.getScope().remove(PARAMETER_TICKET_GRANTING_TICKET_ISSUANCE_METADATA);
             session = session.getParent();
         }
+    }
+
+    /**
+     * Get immutable issuance metadata captured with the ticket-granting ticket.
+     *
+     * @param context request context
+     * @return ticket-granting-ticket issuance metadata, when managed
+     */
+    public static Optional<TicketIssuanceMetadata> getTicketGrantingTicketIssuanceMetadata(
+        final RequestContext context) {
+        val requestMetadata = context.getRequestScope().get(
+            PARAMETER_TICKET_GRANTING_TICKET_ISSUANCE_METADATA,
+            TicketIssuanceMetadata.class);
+        return Optional.ofNullable(requestMetadata).or(() -> Optional.ofNullable(
+            context.getFlowScope().get(
+                PARAMETER_TICKET_GRANTING_TICKET_ISSUANCE_METADATA,
+                TicketIssuanceMetadata.class)));
     }
 
     /**
@@ -304,6 +341,8 @@ public class WebUtils {
      */
     public static void putServiceTicketInRequestScope(final RequestContext context, final Ticket ticketValue) {
         context.getRequestScope().put(PARAMETER_SERVICE_TICKET_ID, ticketValue.getId());
+        putTicketIssuanceMetadataIntoMap(context.getRequestScope(),
+            PARAMETER_SERVICE_TICKET_ISSUANCE_METADATA, ticketValue);
     }
 
     /**
@@ -314,6 +353,28 @@ public class WebUtils {
      */
     public static String getServiceTicketFromRequestScope(final RequestContext context) {
         return context.getRequestScope().getString(PARAMETER_SERVICE_TICKET_ID);
+    }
+
+    /**
+     * Get immutable issuance metadata captured with the service ticket.
+     *
+     * @param context request context
+     * @return service-ticket issuance metadata, when managed
+     */
+    public static Optional<TicketIssuanceMetadata> getServiceTicketIssuanceMetadata(
+        final RequestContext context) {
+        return Optional.ofNullable(context.getRequestScope().get(
+            PARAMETER_SERVICE_TICKET_ISSUANCE_METADATA, TicketIssuanceMetadata.class));
+    }
+
+    private static void putTicketIssuanceMetadataIntoMap(
+        final MutableAttributeMap<Object> map,
+        final String name,
+        final Ticket ticket) {
+        map.remove(name);
+        Optional.ofNullable(ticket)
+            .flatMap(TicketIssuanceMetadata::from)
+            .ifPresent(metadata -> map.put(name, metadata));
     }
 
     /**

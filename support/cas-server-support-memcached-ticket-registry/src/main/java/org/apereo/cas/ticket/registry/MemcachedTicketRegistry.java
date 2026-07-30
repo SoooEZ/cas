@@ -45,7 +45,7 @@ public class MemcachedTicketRegistry extends AbstractTicketRegistry implements D
     }
 
     @Override
-    public @Nullable Ticket updateTicket(final Ticket ticketToUpdate) throws Exception {
+    protected @Nullable Ticket updateSingleTicket(final Ticket ticketToUpdate) throws Exception {
         val ticket = encodeTicket(ticketToUpdate);
         LOGGER.debug("Updating ticket [{}]", ticket);
         val clientFromPool = getClientFromPool();
@@ -61,7 +61,7 @@ public class MemcachedTicketRegistry extends AbstractTicketRegistry implements D
     }
 
     @Override
-    public Ticket addSingleTicket(final Ticket ticketToAdd) {
+    protected Ticket addSingleTicket(final Ticket ticketToAdd) {
         val clientFromPool = getClientFromPool();
         try {
             val ticket = encodeTicket(ticketToAdd);
@@ -98,7 +98,7 @@ public class MemcachedTicketRegistry extends AbstractTicketRegistry implements D
     }
 
     @Override
-    public @Nullable Ticket getTicket(final String ticketIdToGet, final Predicate<Ticket> predicate) {
+    protected @Nullable Ticket getSingleTicket(final String ticketIdToGet, final Predicate<Ticket> predicate) {
         val clientFromPool = getClientFromPool();
         val ticketId = digestIdentifier(ticketIdToGet);
         try {
@@ -120,7 +120,7 @@ public class MemcachedTicketRegistry extends AbstractTicketRegistry implements D
     }
 
     @Override
-    public Collection<? extends Ticket> getTickets() {
+    protected Collection<? extends Ticket> getAllTickets() {
         LOGGER.debug("getTickets() isn't supported. Returning empty list");
         return new ArrayList<>();
     }

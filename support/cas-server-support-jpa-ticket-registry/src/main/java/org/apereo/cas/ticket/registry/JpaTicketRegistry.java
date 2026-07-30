@@ -70,7 +70,7 @@ public class JpaTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket addSingleTicket(final Ticket ticket) {
+    protected Ticket addSingleTicket(final Ticket ticket) {
         transactionTemplate.executeWithoutResult(Unchecked.consumer(status -> {
             val ticketEntity = getTicketEntityFrom(ticket);
             if (ticket instanceof final TicketGrantingTicketAwareTicket grantingTicketAware && grantingTicketAware.getTicketGrantingTicket() != null) {
@@ -84,7 +84,7 @@ public class JpaTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public @Nullable Ticket getTicket(final String ticketId, final Predicate<Ticket> predicate) {
+    protected @Nullable Ticket getSingleTicket(final String ticketId, final Predicate<Ticket> predicate) {
         return transactionTemplate.execute(callback -> {
             try {
                 val encTicketId = digestIdentifier(ticketId);
@@ -131,7 +131,7 @@ public class JpaTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Collection<? extends Ticket> getTickets() {
+    protected Collection<? extends Ticket> getAllTickets() {
         return transactionTemplate.execute(_ -> {
             val sql = String.format("SELECT t FROM %s t", ticketEntityFactory.getEntityName());
             val query = entityManager.createQuery(sql, ticketEntityFactory.getType());
@@ -146,7 +146,7 @@ public class JpaTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public @Nullable Ticket updateTicket(final Ticket ticket) {
+    protected @Nullable Ticket updateSingleTicket(final Ticket ticket) {
         return transactionTemplate.execute(_ -> FunctionUtils.doUnchecked(() -> {
             LOGGER.trace("Updating ticket [{}]", ticket);
             val ticketEntity = getTicketEntityFrom(ticket);
@@ -163,7 +163,7 @@ public class JpaTicketRegistry extends AbstractTicketRegistry {
      * @return streamable results
      */
     @Override
-    public Stream<? extends Ticket> stream(final TicketRegistryStreamCriteria criteria) {
+    protected Stream<? extends Ticket> streamTickets(final TicketRegistryStreamCriteria criteria) {
         val sql = String.format("SELECT t FROM %s t", ticketEntityFactory.getEntityName());
         val query = entityManager.createQuery(sql, ticketEntityFactory.getType());
         query.setLockMode(LockModeType.NONE);
@@ -186,7 +186,7 @@ public class JpaTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> getTicketsFor(final Service service) {
+    protected Stream<? extends Ticket> streamTicketsFor(final Service service) {
         val sql = String.format("SELECT t FROM %s t WHERE t.service=:service", ticketEntityFactory.getEntityName());
         val query = entityManager.createQuery(sql, ticketEntityFactory.getType()).setParameter("service", service.getId());
         query.setLockMode(LockModeType.NONE);
@@ -200,7 +200,7 @@ public class JpaTicketRegistry extends AbstractTicketRegistry {
     }
     
     @Override
-    public Stream<? extends Ticket> getSessionsFor(final String principalId) {
+    protected Stream<? extends Ticket> streamSessionsFor(final String principalId) {
         val sql = String.format("SELECT t FROM %s t WHERE t.type=:type AND t.principalId=:principalId", ticketEntityFactory.getEntityName());
         val query = entityManager.createQuery(sql, ticketEntityFactory.getType())
             .setParameter("principalId", digestIdentifier(principalId))
@@ -216,7 +216,7 @@ public class JpaTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public List<? extends Serializable> query(final TicketRegistryQueryCriteria criteria) {
+    protected List<? extends Serializable> queryTickets(final TicketRegistryQueryCriteria criteria) {
         var sql = String.format("SELECT t FROM %s t WHERE t.type=:type", ticketEntityFactory.getEntityName());
         if (StringUtils.isNotBlank(criteria.getId())) {
             sql = sql.concat(" AND t.id = :id");
@@ -248,7 +248,7 @@ public class JpaTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
+    protected Stream<? extends Ticket> streamSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
         val criteria = queryAttributes.entrySet()
             .stream()
             .map(entry -> {

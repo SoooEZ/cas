@@ -22,7 +22,6 @@ import org.apereo.cas.util.crypto.CipherExecutor;
 import org.apereo.cas.util.function.FunctionUtils;
 import org.apereo.cas.util.serialization.SerializationUtils;
 import com.google.common.io.ByteSource;
-import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
@@ -42,7 +41,6 @@ import org.springframework.context.ApplicationContext;
  * @since 3.0.0
  */
 @Slf4j
-@AllArgsConstructor
 public abstract class AbstractTicketRegistry implements TicketRegistry {
 
     private static final String TICKET_ENCRYPTION_LOG_MESSAGE = "Ticket encryption is not enabled. Falling back to default behavior";
@@ -56,6 +54,18 @@ public abstract class AbstractTicketRegistry implements TicketRegistry {
     protected final TicketCatalog ticketCatalog;
 
     protected final ApplicationContext applicationContext;
+
+    private volatile TicketIssuancePolicy ticketIssuancePolicy;
+
+    public AbstractTicketRegistry(final CipherExecutor cipherExecutor,
+                                  final TicketSerializationManager ticketSerializationManager,
+                                  final TicketCatalog ticketCatalog,
+                                  final ApplicationContext applicationContext) {
+        this.cipherExecutor = cipherExecutor;
+        this.ticketSerializationManager = ticketSerializationManager;
+        this.ticketCatalog = ticketCatalog;
+        this.applicationContext = applicationContext;
+    }
 
     protected String getPrincipalIdFrom(final Ticket ticket) {
         return ticket instanceof final AuthenticationAwareTicket authenticationAwareTicket
@@ -93,20 +103,128 @@ public abstract class AbstractTicketRegistry implements TicketRegistry {
 
     @Override
     public long deleteTicketsFor(final String principalId) {
-        return getTickets(ticket -> ticket instanceof final AuthenticationAwareTicket aat
-            && Strings.CI.equals(aat.getAuthentication().getPrincipal().getId(), principalId))
-            .mapToLong(ticket -> FunctionUtils.doAndHandle(() -> deleteTicket(ticket), t -> 0).get())
-            .sum();
+        try (val tickets = streamTickets(TicketRegistryStreamCriteria.builder().build())) {
+            return tickets
+                .filter(ticket -> ticket instanceof final AuthenticationAwareTicket aat
+                    && Strings.CI.equals(aat.getAuthentication().getPrincipal().getId(), principalId))
+                .mapToLong(ticket -> FunctionUtils.doAndHandle(() -> deleteTicket(ticket), t -> 0).get())
+                .sum();
+        }
     }
 
     @Override
-    public Ticket addTicket(final Ticket ticket) throws Exception {
-        return ticket != null && !ticket.isExpired() ? addSingleTicket(ticket) : null;
+    public final Ticket addTicket(final Ticket ticket) throws Exception {
+        if (ticket == null || ticket.isExpired()) {
+            return null;
+        }
+        prepareTicketForWrite(ticket, TicketIssuancePolicy.Operation.ADD);
+        return addSingleTicket(ticket);
     }
 
     @Override
-    public @Nullable Ticket getTicket(final String ticketId) {
-        val returnTicket = getTicket(ticketId, ticket -> {
+    public final Ticket addTicket(
+        final Ticket ticket,
+        final TicketIssuanceWriteContext context) throws Exception {
+        Objects.requireNonNull(context, "context");
+        if (ticket == null || ticket.isExpired()) {
+            return null;
+        }
+        prepareTicketForWrite(ticket, TicketIssuancePolicy.Operation.ADD, context);
+        return addSingleTicket(ticket, context);
+    }
+
+    @Override
+    public final List<? extends Ticket> addTicket(final Stream<? extends Ticket> toSave) {
+        val tickets = toSave
+            .filter(Objects::nonNull)
+            .filter(ticket -> !ticket.isExpired())
+            .map(ticket -> prepareTicketForWrite(ticket, TicketIssuancePolicy.Operation.ADD));
+        return addTickets(tickets);
+    }
+
+    protected List<? extends Ticket> addTickets(final Stream<? extends Ticket> tickets) {
+        return tickets.map(Unchecked.function(this::addSingleTicket)).filter(Objects::nonNull).toList();
+    }
+
+    @Override
+    public final @Nullable Ticket getTicket(final String ticketId) {
+        return getTicket(ticketId, TicketIssuanceReadContext.standard());
+    }
+
+    @Override
+    public final @Nullable Ticket getTicket(final String ticketId, final TicketIssuanceReadContext context) {
+        return readTicket(ticketId, context, false);
+    }
+
+    @Override
+    public final <T extends Ticket> T getTicket(final String ticketId, final @NonNull Class<T> clazz) {
+        return getTicket(ticketId, clazz, TicketIssuanceReadContext.standard());
+    }
+
+    @Override
+    public final <T extends Ticket> T getTicket(final String ticketId, final @NonNull Class<T> clazz,
+                                                final TicketIssuanceReadContext context) {
+        val ticket = getTicket(ticketId, context);
+        return requireTicketType(ticketId, clazz, ticket);
+    }
+
+    @Override
+    public final @Nullable Ticket getTicket(final String ticketId, final Predicate<Ticket> predicate) {
+        return readTicketMatching(
+            ticketId, predicate, TicketIssuanceReadContext.standard(), false);
+    }
+
+    @Override
+    public final @Nullable Ticket getTicketFromSource(final String ticketId) {
+        return getTicketFromSource(
+            ticketId, TicketIssuanceReadContext.standard());
+    }
+
+    @Override
+    public final @Nullable Ticket getTicketFromSource(
+        final String ticketId,
+        final TicketIssuanceReadContext context) {
+        return readTicket(ticketId, context, true);
+    }
+
+    @Override
+    public final <T extends Ticket> T getTicketFromSource(
+        final String ticketId,
+        final @NonNull Class<T> clazz) {
+        return getTicketFromSource(
+            ticketId, clazz, TicketIssuanceReadContext.standard());
+    }
+
+    @Override
+    public final <T extends Ticket> T getTicketFromSource(
+        final String ticketId,
+        final @NonNull Class<T> clazz,
+        final TicketIssuanceReadContext context) {
+        val ticket = getTicketFromSource(ticketId, context);
+        return requireTicketType(ticketId, clazz, ticket);
+    }
+
+    private static <T extends Ticket> T requireTicketType(
+        final String ticketId,
+        final Class<T> clazz,
+        final @Nullable Ticket ticket) {
+        if (ticket == null) {
+            LOGGER.debug("Ticket [{}] with type [{}] cannot be found", ticketId, clazz.getSimpleName());
+            throw new InvalidTicketException(ticketId);
+        }
+        if (!clazz.isAssignableFrom(ticket.getClass())) {
+            throw new ClassCastException("Ticket [" + ticket.getId() + " is of type "
+                + ticket.getClass() + " when we were expecting " + clazz);
+        }
+        return clazz.cast(ticket);
+    }
+
+    private @Nullable Ticket readTicket(
+        final String ticketId,
+        final TicketIssuanceReadContext context,
+        final boolean authoritativeSource) {
+        Objects.requireNonNull(context, "context");
+        val returnTicket = readTicketMatching(ticketId, ticket -> {
             if (ticket.isExpired()) {
                 val ticketAgeSeconds = getTicketAgeSeconds(ticket);
                 LOGGER.debug("Ticket [{}] has expired according to policy [{}] after [{}] seconds and [{}] uses and will be removed from the ticket registry",
@@ -126,7 +244,7 @@ public abstract class AbstractTicketRegistry implements TicketRegistry {
                 return false;
             }
             return true;
-        });
+        }, context, authoritativeSource);
         if (returnTicket != null) {
             val ticketAgeSeconds = getTicketAgeSeconds(returnTicket);
             if (ticketAgeSeconds < -1) {
@@ -136,18 +254,130 @@ public abstract class AbstractTicketRegistry implements TicketRegistry {
         return returnTicket;
     }
 
+    private @Nullable Ticket readTicketMatching(
+        final String ticketId,
+        final Predicate<Ticket> predicate,
+        final TicketIssuanceReadContext context,
+        final boolean authoritativeSource) {
+        Objects.requireNonNull(predicate, "predicate");
+        val policyPredicate = (Predicate<Ticket>) ticket ->
+            getTicketIssuancePolicy().isTicketReadable(ticket, context)
+                && predicate.test(ticket);
+        return authoritativeSource
+            ? getSingleTicketFromSource(ticketId, policyPredicate)
+            : getSingleTicket(ticketId, policyPredicate);
+    }
+
     @Override
-    public <T extends Ticket> T getTicket(final String ticketId, final @NonNull Class<T> clazz) {
-        val ticket = getTicket(ticketId);
-        if (ticket == null) {
-            LOGGER.debug("Ticket [{}] with type [{}] cannot be found", ticketId, clazz.getSimpleName());
-            throw new InvalidTicketException(ticketId);
+    public final @Nullable Ticket updateTicket(final Ticket ticket) throws Exception {
+        if (ticket == null || ticket.isExpired()) {
+            return null;
         }
-        if (!clazz.isAssignableFrom(ticket.getClass())) {
-            throw new ClassCastException("Ticket [" + ticket.getId() + " is of type "
-                + ticket.getClass() + " when we were expecting " + clazz);
+        prepareTicketForWrite(ticket, TicketIssuancePolicy.Operation.UPDATE);
+        return updateSingleTicket(ticket);
+    }
+
+    @Override
+    public final @Nullable Ticket updateTicket(
+        final Ticket ticket,
+        final TicketIssuanceWriteContext context) throws Exception {
+        Objects.requireNonNull(context, "context");
+        if (ticket == null || ticket.isExpired()) {
+            return null;
         }
-        return clazz.cast(ticket);
+        prepareTicketForWrite(ticket, TicketIssuancePolicy.Operation.UPDATE, context);
+        return updateSingleTicket(ticket, context);
+    }
+
+    @Override
+    public final Collection<? extends Ticket> getTickets() {
+        return filterReadable(getAllTickets().stream(), TicketIssuanceReadContext.standard())
+            .collect(Collectors.toList());
+    }
+
+    @Override
+    public final Stream<? extends Ticket> getTickets(final Predicate<Ticket> predicate) {
+        return stream().filter(predicate);
+    }
+
+    @Override
+    public final Stream<? extends Ticket> stream() {
+        return stream(TicketRegistryStreamCriteria.builder().build());
+    }
+
+    @Override
+    public final Stream<? extends Ticket> stream(final TicketRegistryStreamCriteria criteria) {
+        return filterReadable(streamTickets(criteria), TicketIssuanceReadContext.standard());
+    }
+
+    protected Stream<? extends Ticket> streamTickets(final TicketRegistryStreamCriteria criteria) {
+        return getAllTickets().parallelStream();
+    }
+
+    protected Collection<? extends Ticket> getAllTickets() {
+        return List.of();
+    }
+
+    @Override
+    public final Stream<? extends Ticket> getSessionsFor(final String principalId) {
+        return filterReadable(streamSessionsFor(principalId), TicketIssuanceReadContext.standard());
+    }
+
+    protected Stream<? extends Ticket> streamSessionsFor(final String principalId) {
+        return streamTickets(TicketRegistryStreamCriteria.builder().build())
+            .filter(ticket -> ticket instanceof final TicketGrantingTicket ticketGrantingTicket
+                && !ticket.isExpired()
+                && ticketGrantingTicket.getAuthentication().getPrincipal().getId().equals(principalId));
+    }
+
+    protected final TicketIssuancePolicy getTicketIssuancePolicy() {
+        var policy = ticketIssuancePolicy;
+        if (policy == null) {
+            val provider = applicationContext != null
+                ? applicationContext.getBeanProvider(TicketIssuancePolicy.class)
+                : null;
+            policy = provider != null
+                ? provider.getIfAvailable(TicketIssuancePolicy::noOp)
+                : TicketIssuancePolicy.noOp();
+            ticketIssuancePolicy = policy;
+        }
+        return policy;
+    }
+
+    protected final Ticket prepareTicketForWrite(final Ticket ticket, final TicketIssuancePolicy.Operation operation) {
+        getTicketIssuancePolicy().prepareForWrite(ticket, operation).ifPresent(metadata -> metadata.writeTo(ticket));
+        return ticket;
+    }
+
+    protected final Ticket prepareTicketForWrite(
+        final Ticket ticket,
+        final TicketIssuancePolicy.Operation operation,
+        final TicketIssuanceWriteContext context) {
+        Objects.requireNonNull(context, "context");
+        val persistedMetadata = TicketIssuanceMetadata.from(ticket);
+        if (operation == TicketIssuancePolicy.Operation.UPDATE) {
+            if (context.isManaged()) {
+                context.requireConsistentWith(persistedMetadata.orElseThrow(() ->
+                    new SecurityException(
+                        "A managed ticket update requires persisted lifecycle metadata")));
+            } else if (persistedMetadata.isPresent()) {
+                throw new SecurityException(
+                    "Managed ticket metadata cannot be downgraded to a non-capability write");
+            }
+        }
+
+        val preparedMetadata = getTicketIssuancePolicy().prepareForWrite(ticket, operation, context);
+        if (context.isManaged()) {
+            val metadata = preparedMetadata.orElseThrow(() ->
+                new SecurityException(
+                    "A managed issuance context requires durable lifecycle metadata"));
+            context.requireConsistentWith(metadata);
+            metadata.writeTo(ticket);
+        } else if (preparedMetadata.isPresent()) {
+            throw new SecurityException(
+                "A non-capability issuance context cannot produce managed lifecycle metadata");
+        }
+        return ticket;
     }
 
     @Override
@@ -156,7 +386,7 @@ public abstract class AbstractTicketRegistry implements TicketRegistry {
             LOGGER.trace("No ticket id is provided for deletion");
             return 0;
         }
-        val ticket = getTicket(ticketId);
+        val ticket = getSingleTicket(ticketId, _ -> true);
         if (ticket == null) {
             LOGGER.debug("Ticket [{}] could not be fetched from the registry; it may have been expired and deleted.", ticketId);
             return 0;
@@ -237,8 +467,12 @@ public abstract class AbstractTicketRegistry implements TicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> getTicketsFor(final Service service) {
-        return stream()
+    public final Stream<? extends Ticket> getTicketsFor(final Service service) {
+        return filterReadable(streamTicketsFor(service), TicketIssuanceReadContext.standard());
+    }
+
+    protected Stream<? extends Ticket> streamTicketsFor(final Service service) {
+        return streamTickets(TicketRegistryStreamCriteria.builder().build())
             .map(this::decodeTicket)
             .filter(ServiceAwareTicket.class::isInstance)
             .filter(ticket -> !ticket.isExpired())
@@ -248,8 +482,12 @@ public abstract class AbstractTicketRegistry implements TicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
-        return getTickets(ticket -> {
+    public final Stream<? extends Ticket> getSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
+        return filterReadable(streamSessionsWithAttributes(queryAttributes), TicketIssuanceReadContext.standard());
+    }
+
+    protected Stream<? extends Ticket> streamSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
+        return streamTickets(TicketRegistryStreamCriteria.builder().build()).filter(ticket -> {
             if (ticket instanceof final TicketGrantingTicket ticketGrantingTicket && !ticket.isExpired()
                 && ticketGrantingTicket.getAuthentication() != null) {
                 val attributes = collectAndDigestTicketAttributes(ticketGrantingTicket);
@@ -276,11 +514,88 @@ public abstract class AbstractTicketRegistry implements TicketRegistry {
         });
     }
 
+    @Override
+    public final List<? extends Serializable> query(final TicketRegistryQueryCriteria criteria) {
+        val policy = getTicketIssuancePolicy();
+        return queryTickets(criteria)
+            .stream()
+            .filter(Objects::nonNull)
+            .filter(result -> result instanceof final Ticket ticket
+                ? policy.isTicketReadable(ticket, TicketIssuanceReadContext.standard())
+                : policy.isQueryResultReadable(result, criteria))
+            .collect(Collectors.toList());
+    }
+
+    protected List<? extends Serializable> queryTickets(final TicketRegistryQueryCriteria criteria) {
+        return List.of();
+    }
+
+    private Stream<? extends Ticket> filterReadable(final Stream<? extends Ticket> tickets,
+                                                    final TicketIssuanceReadContext context) {
+        return tickets
+            .filter(Objects::nonNull)
+            .filter(ticket -> getTicketIssuancePolicy().isTicketReadable(ticket, context));
+    }
+
     protected long deleteSingleTicket(final Ticket ticket) {
         return 0;
     }
 
     protected abstract Ticket addSingleTicket(Ticket ticket) throws Exception;
+
+    /**
+     * Persist one ticket with exact protocol-supplied issuance coordinates.
+     * Storage implementations that need the context should override this
+     * method; the compatibility default delegates to the original persistence
+     * method after the policy has received the context.
+     *
+     * @param ticket ticket to add
+     * @param context exact issuance write context
+     * @return persisted ticket
+     * @throws Exception the exception
+     */
+    protected Ticket addSingleTicket(
+        final Ticket ticket,
+        final TicketIssuanceWriteContext context) throws Exception {
+        Objects.requireNonNull(context, "context");
+        return addSingleTicket(ticket);
+    }
+
+    protected abstract @Nullable Ticket getSingleTicket(String ticketId, Predicate<Ticket> predicate);
+
+    /**
+     * Read one ticket from the authoritative storage source. Implementations
+     * with a process-local near cache must override this method and bypass it.
+     * For registries without a separate near cache, the normal read is already
+     * authoritative.
+     *
+     * @param ticketId ticket identifier
+     * @param predicate ticket filter
+     * @return ticket, or {@code null}
+     */
+    protected @Nullable Ticket getSingleTicketFromSource(
+        final String ticketId,
+        final Predicate<Ticket> predicate) {
+        return getSingleTicket(ticketId, predicate);
+    }
+
+    protected abstract @Nullable Ticket updateSingleTicket(Ticket ticket) throws Exception;
+
+    /**
+     * Persist one ticket update with exact protocol-supplied issuance
+     * coordinates.
+     *
+     * @param ticket ticket to update
+     * @param context exact issuance write context
+     * @return persisted ticket
+     * @throws Exception the exception
+     */
+    protected @Nullable Ticket updateSingleTicket(
+        final Ticket ticket,
+        final TicketIssuanceWriteContext context) throws Exception {
+        Objects.requireNonNull(context, "context");
+        return updateSingleTicket(ticket);
+    }
 
     protected int deleteTickets(final Set<String> tickets) {
         return deleteTickets(tickets.stream());
@@ -302,7 +617,7 @@ public abstract class AbstractTicketRegistry implements TicketRegistry {
         if (services != null && !services.isEmpty()) {
             services.keySet()
                 .stream()
-                .map(this::getTicket)
+                .map(ticketId -> getSingleTicket(ticketId, _ -> true))
                 .filter(Objects::nonNull)
                 .forEach(serviceTicket -> {
                     val deleteCount = deleteSingleTicket(serviceTicket);

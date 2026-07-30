@@ -63,7 +63,7 @@ public class MongoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket addSingleTicket(final Ticket ticket) {
+    protected Ticket addSingleTicket(final Ticket ticket) {
         try {
             LOGGER.debug("Adding ticket [{}]", ticket.getId());
             val document = buildTicketAsDocument(ticket);
@@ -85,7 +85,7 @@ public class MongoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket getTicket(final String ticketId, final Predicate<Ticket> predicate) {
+    protected Ticket getSingleTicket(final String ticketId, final Predicate<Ticket> predicate) {
         try {
             LOGGER.debug("Locating ticket [{}]", ticketId);
             val encTicketId = digestIdentifier(ticketId);
@@ -140,8 +140,8 @@ public class MongoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Collection<? extends Ticket> getTickets() {
-        try (val ticketStream = stream()) {
+    protected Collection<? extends Ticket> getAllTickets() {
+        try (val ticketStream = streamTickets(TicketRegistryStreamCriteria.builder().build())) {
             return ticketStream
                 .filter(ticket -> !ticket.isExpired())
                 .collect(Collectors.toSet());
@@ -149,7 +149,7 @@ public class MongoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket updateTicket(final Ticket ticket) {
+    protected Ticket updateSingleTicket(final Ticket ticket) {
         LOGGER.debug("Updating ticket [{}]", ticket);
         try {
             val holder = buildTicketAsDocument(ticket);
@@ -179,7 +179,7 @@ public class MongoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> stream(final TicketRegistryStreamCriteria criteria) {
+    protected Stream<? extends Ticket> streamTickets(final TicketRegistryStreamCriteria criteria) {
         Stream<MongoDbTicketDocument> ticketStream = ticketCatalog
             .findAll()
             .stream()
@@ -223,7 +223,7 @@ public class MongoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> getTicketsFor(final Service service) {
+    protected Stream<? extends Ticket> streamTicketsFor(final Service service) {
         val ticketDefinitions = ticketCatalog.findAll();
         val query = buildTicketQuery(Criteria.where(MongoDbTicketDocument.FIELD_NAME_SERVICE).is(service.getId()),
             buildUnexpiredTicketCriteria());
@@ -237,7 +237,7 @@ public class MongoDbTicketRegistry extends AbstractTicketRegistry {
     }
     
     @Override
-    public Stream<? extends Ticket> getSessionsFor(final String principalId) {
+    protected Stream<? extends Ticket> streamSessionsFor(final String principalId) {
         val ticketDefinitions = ticketCatalog.findTicketDefinition(TicketGrantingTicket.class);
         val query = buildTicketQuery(buildPrincipalCriteria(principalId), buildUnexpiredTicketCriteria());
         return ticketDefinitions
@@ -250,7 +250,7 @@ public class MongoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
+    protected Stream<? extends Ticket> streamSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
         if (queryAttributes.isEmpty()) {
             return Stream.empty();
         }
@@ -303,7 +303,7 @@ public class MongoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public List<? extends Serializable> query(final TicketRegistryQueryCriteria criteria) {
+    protected List<? extends Serializable> queryTickets(final TicketRegistryQueryCriteria criteria) {
         val ticketDefinitions = StringUtils.isNotBlank(criteria.getType())
             ? List.of(Objects.requireNonNull(ticketCatalog.find(criteria.getType())))
             : ticketCatalog.findAll();

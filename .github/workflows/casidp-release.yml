@@ -1,0 +1,149 @@
+name: CAS-IDP Fork Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing signed tag; must exactly equal v<gradle.properties version>
+        required: true
+        type: string
+      dry_run:
+        description: Build and audit locally without publishing packages or attestations
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: casidp-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, attest, and explicitly publish the fork
+    if: ${{ github.repository == 'SoooEZ/cas' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    environment: casidp-release
+    services:
+      redis:
+        image: redis:7.4.7-alpine@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Check out the existing release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: corretto
+          java-version: '25'
+
+      - name: Set up Gradle with a read-only dependency cache
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          cache-read-only: true
+          validate-wrappers: true
+
+      - name: Build and audit a non-publishing release candidate
+        if: ${{ inputs.dry_run }}
+        env:
+          CASIDP_RELEASE_TAG: ${{ inputs.release_tag }}
+          CASIDP_SIGNING_FINGERPRINT: ${{ secrets.CASIDP_SIGNING_FINGERPRINT }}
+          PGP_PRIVATE_KEY: ${{ secrets.PGP_PRIVATE_KEY }}
+          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+        run: |
+          set -Eeuo pipefail
+          chmod +x ci/casidp-release.sh ci/casidp-supply-chain.py
+          ./ci/casidp-release.sh --dry-run
+
+      - name: Prepare an immutable candidate for explicit publication
+        if: ${{ inputs.dry_run == false }}
+        env:
+          CASIDP_RELEASE_TAG: ${{ inputs.release_tag }}
+          CASIDP_SIGNING_FINGERPRINT: ${{ secrets.CASIDP_SIGNING_FINGERPRINT }}
+          PGP_PRIVATE_KEY: ${{ secrets.PGP_PRIVATE_KEY }}
+          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          chmod +x ci/casidp-release.sh ci/casidp-supply-chain.py
+          ./ci/casidp-release.sh --prepare
+
+      - name: Attest the aggregate SHA-256 release manifest
+        if: ${{ inputs.dry_run == false }}
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: .casidp-release/SHA256SUMS
+
+      - name: Attest the CycloneDX SBOM
+        if: ${{ inputs.dry_run == false }}
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: .casidp-release/SHA256SUMS
+          sbom-path: .casidp-release/casidp.cdx.json
+
+      - name: Attest the complete release manifest
+        if: ${{ inputs.dry_run == false }}
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: .casidp-release/SHA256SUMS
+          predicate-type: https://github.com/SoooEZ/cas/attestations/casidp-release-manifest/v1
+          predicate-path: .casidp-release/casidp-release-manifest.json
+
+      - name: Explicitly publish and read back every package file
+        if: ${{ inputs.dry_run == false }}
+        env:
+          CASIDP_RELEASE_TAG: ${{ inputs.release_tag }}
+          CASIDP_SIGNING_FINGERPRINT: ${{ secrets.CASIDP_SIGNING_FINGERPRINT }}
+          PGP_PRIVATE_KEY: ${{ secrets.PGP_PRIVATE_KEY }}
+          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./ci/casidp-release.sh --publish
+
+      - name: Attest successful publication completion
+        if: ${{ inputs.dry_run == false }}
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: .casidp-release/SHA256SUMS
+          predicate-type: https://github.com/SoooEZ/cas/attestations/casidp-publication/v1
+          predicate-path: .casidp-release/casidp-publication.json
+
+      - name: Preserve signed release evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: casidp-release-evidence-${{ inputs.release_tag }}
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 0
+          path: |
+            .casidp-release/SHA256SUMS
+            .casidp-release/SHA256SUMS.asc
+            .casidp-release/casidp-release-manifest.json
+            .casidp-release/casidp-release-manifest.json.asc
+            .casidp-release/casidp.cdx.json
+            .casidp-release/casidp.cdx.json.asc
+            .casidp-release/publish-task-graph.json
+            .casidp-release/publish-task-graph.json.asc
+            .casidp-release/publish-task-graph.log
+            .casidp-release/casidp-publication.json

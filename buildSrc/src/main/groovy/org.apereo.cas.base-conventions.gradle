@@ -1,6 +1,7 @@
 import org.gradle.external.javadoc.JavadocMemberLevel
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 import org.gradle.jvm.toolchain.JvmVendorSpec
+import org.gradle.api.tasks.bundling.AbstractArchiveTask
 import org.apereo.cas.gradle.CasBuildSettings
 
 plugins {
@@ -21,6 +22,11 @@ if (gradle.startParameter.taskNames.any { task -> task.contains('publishToMavenL
 project.pluginManager.apply('org.apereo.cas.tasks-conventions')
 
 CasBuildSettings.configureProjectExtensions(project)
+
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
 
 if (!CasBuildSettings.isArchAdjusted()) {
     def arch = System.getProperty('os.arch')
@@ -43,16 +49,34 @@ if (generateGitProperties) {
         def projectName = project.name
         def projectVersion = CasBuildSettings.projectVersion(project)
         def projectDescription = project.description
+        def upstreamVersion = providers.gradleProperty('casIdpUpstreamVersion').get()
+        def upstreamCommit = providers.gradleProperty('casIdpUpstreamCommit').get()
+        def forkRepository = providers.gradleProperty('casIdpForkRepository').get()
 
         it.dotGitDirectory.set(new File(project.rootDir, '.git'))
         it.output.set(propertiesFile)
+        inputs.property('casIdpUpstreamVersion', upstreamVersion)
+        inputs.property('casIdpUpstreamCommit', upstreamCommit)
+        inputs.property('casIdpForkRepository', forkRepository)
         doLast {
-            propertiesFile.withWriterAppend('UTF-8') { writer ->
-                writer << "project.group=${projectGroup}"
-                writer << "\nproject.name=${projectName}"
-                writer << "\nproject.version=${projectVersion}"
-                writer << "\nproject.description=${projectDescription}\n"
-            }
+            def allowedGitPrefixes = [
+                'git.commit.id=',
+                'git.commit.id.abbrev=',
+                'git.commit.signed=',
+                'git.commit.time='
+            ]
+            def deterministicProperties = propertiesFile.readLines('UTF-8')
+                .findAll { line -> allowedGitPrefixes.any { prefix -> line.startsWith(prefix) } }
+            deterministicProperties.addAll([
+                "cas-idp.fork.repository=${forkRepository}",
+                "cas-idp.upstream.commit=${upstreamCommit}",
+                "cas-idp.upstream.version=${upstreamVersion}",
+                "project.description=${projectDescription}",
+                "project.group=${projectGroup}",
+                "project.name=${projectName}",
+                "project.version=${projectVersion}"
+            ])
+            propertiesFile.setText(deterministicProperties.sort().join('\n') + '\n', 'UTF-8')
         }
     }
 }
@@ -87,6 +111,4 @@ tasks.named('javadoc') {
     failOnError = providers.systemProperty('ignoreJavadocFailures').present
     excludes = ['**/generated/**', '**/com/duosecurity/**']
 }
-
-
 

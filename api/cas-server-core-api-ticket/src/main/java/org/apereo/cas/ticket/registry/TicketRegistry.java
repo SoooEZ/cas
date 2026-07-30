@@ -5,6 +5,7 @@ import org.apereo.cas.authentication.principal.Service;
 import org.apereo.cas.ticket.Ticket;
 import org.apereo.cas.ticket.TicketGrantingTicket;
 import org.apereo.cas.util.crypto.CipherExecutor;
+import lombok.val;
 import org.jooq.lambda.Unchecked;
 import org.jspecify.annotations.Nullable;
 
@@ -40,6 +41,26 @@ public interface TicketRegistry {
     @Nullable Ticket addTicket(Ticket ticket) throws Exception;
 
     /**
+     * Add a ticket using exact protocol-supplied issuance coordinates.
+     *
+     * <p>The default fails closed because a custom registry that has not opted
+     * into this contract cannot prove that it preserved the context. Existing
+     * callers and implementations of {@link #addTicket(Ticket)} are unchanged.</p>
+     *
+     * @param ticket ticket to add
+     * @param context exact issuance write context
+     * @return ticket
+     * @throws Exception the exception
+     */
+    default @Nullable Ticket addTicket(
+        final Ticket ticket,
+        final TicketIssuanceWriteContext context) throws Exception {
+        Objects.requireNonNull(context, "context");
+        throw new UnsupportedOperationException(
+            "This ticket registry does not support an explicit issuance write context");
+    }
+
+    /**
      * Save.
      *
      * @param toSave the to save
@@ -68,13 +89,130 @@ public interface TicketRegistry {
     @Nullable Ticket getTicket(String ticketId);
 
     /**
+     * Retrieve a ticket using an explicit issuance read context.
+     *
+     * <p>The default preserves compatibility only for a standard read. An
+     * intent-aware read fails closed because a custom registry that has not
+     * opted into this contract cannot prove that it enforced same-intent
+     * visibility. Registries extending {@code AbstractTicketRegistry} apply
+     * the configured {@link TicketIssuancePolicy} to every context.</p>
+     *
+     * @param ticketId the id of the ticket to retrieve
+     * @param context explicit issuance context
+     * @return the requested ticket
+     */
+    default @Nullable Ticket getTicket(final String ticketId, final TicketIssuanceReadContext context) {
+        Objects.requireNonNull(context, "context");
+        if (context.intentId() != null) {
+            throw new UnsupportedOperationException(
+                "This ticket registry does not support an intent-aware issuance read context");
+        }
+        return getTicket(ticketId);
+    }
+
+    /**
+     * Retrieve a typed ticket using an explicit issuance read context.
+     *
+     * @param <T> ticket type
+     * @param ticketId ticket identifier
+     * @param clazz expected ticket class
+     * @param context explicit issuance context
+     * @return requested ticket
+     */
+    default <T extends Ticket> @Nullable T getTicket(final String ticketId, final Class<T> clazz,
+                                                     final TicketIssuanceReadContext context) {
+        Objects.requireNonNull(context, "context");
+        if (context.intentId() != null) {
+            throw new UnsupportedOperationException(
+                "This ticket registry does not support an intent-aware issuance read context");
+        }
+        return getTicket(ticketId, clazz);
+    }
+
+    /**
      * Gets ticket from registry using a predicate.
      *
      * @param ticketId  the ticket id
      * @param predicate the predicate that tests the ticket
      * @return the ticket
+     * @apiNote This overload represents a standard read without an issuance
+     * intent. Application and protocol code that needs same-intent semantics
+     * should call a context-aware overload instead.
      */
     @Nullable Ticket getTicket(String ticketId, Predicate<Ticket> predicate);
+
+    /**
+     * Retrieve a ticket from the authoritative registry source, bypassing any
+     * optional process-local near cache.
+     *
+     * <p>The default fails closed because a custom registry cannot otherwise
+     * prove that a normal read reaches its storage authority. Registries whose
+     * normal read is already authoritative may explicitly delegate to
+     * {@link #getTicket(String, TicketIssuanceReadContext)}.</p>
+     *
+     * @param ticketId the id of the ticket to retrieve
+     * @param context explicit issuance context
+     * @return the requested ticket
+     */
+    default @Nullable Ticket getTicketFromSource(
+        final String ticketId,
+        final TicketIssuanceReadContext context) {
+        Objects.requireNonNull(context, "context");
+        throw new UnsupportedOperationException(
+            "This ticket registry does not support authoritative source reads");
+    }
+
+    /**
+     * Retrieve a ticket from the authoritative registry source using a
+     * standard read context.
+     *
+     * @param ticketId the id of the ticket to retrieve
+     * @return the requested ticket
+     */
+    default @Nullable Ticket getTicketFromSource(final String ticketId) {
+        return getTicketFromSource(ticketId, TicketIssuanceReadContext.standard());
+    }
+
+    /**
+     * Retrieve a typed ticket from the authoritative registry source.
+     *
+     * @param <T> ticket type
+     * @param ticketId ticket identifier
+     * @param clazz expected ticket class
+     * @param context explicit issuance context
+     * @return requested ticket
+     */
+    default <T extends Ticket> @Nullable T getTicketFromSource(
+        final String ticketId,
+        final Class<T> clazz,
+        final TicketIssuanceReadContext context) {
+        Objects.requireNonNull(clazz, "clazz");
+        val ticket = getTicketFromSource(ticketId, context);
+        if (ticket == null) {
+            return null;
+        }
+        if (!clazz.isAssignableFrom(ticket.getClass())) {
+            throw new ClassCastException("Ticket [" + ticket.getId() + " is of type "
+                + ticket.getClass() + " when we were expecting " + clazz);
+        }
+        return clazz.cast(ticket);
+    }
+
+    /**
+     * Retrieve a typed ticket from the authoritative registry source using a
+     * standard read context.
+     *
+     * @param <T> ticket type
+     * @param ticketId ticket identifier
+     * @param clazz expected ticket class
+     * @return requested ticket
+     */
+    default <T extends Ticket> @Nullable T getTicketFromSource(
+        final String ticketId,
+        final Class<T> clazz) {
+        return getTicketFromSource(
+            ticketId, clazz, TicketIssuanceReadContext.standard());
+    }
 
     /**
      * Remove a specific ticket from the registry.
@@ -135,6 +273,26 @@ public interface TicketRegistry {
      * @throws Exception the exception
      */
     @Nullable Ticket updateTicket(Ticket ticket) throws Exception;
+
+    /**
+     * Update a ticket using exact protocol-supplied issuance coordinates.
+     *
+     * <p>The default fails closed because a custom registry that has not opted
+     * into this contract cannot prove that it preserved the context. Existing
+     * callers and implementations of {@link #updateTicket(Ticket)} are unchanged.</p>
+     *
+     * @param ticket ticket to update
+     * @param context exact issuance write context
+     * @return updated ticket
+     * @throws Exception the exception
+     */
+    default @Nullable Ticket updateTicket(
+        final Ticket ticket,
+        final TicketIssuanceWriteContext context) throws Exception {
+        Objects.requireNonNull(context, "context");
+        throw new UnsupportedOperationException(
+            "This ticket registry does not support an explicit issuance write context");
+    }
 
     /**
      * Computes the number of SSO sessions stored in the ticket registry.

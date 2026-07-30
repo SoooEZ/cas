@@ -66,7 +66,7 @@ public class CassandraTicketRegistry extends AbstractTicketRegistry implements D
     }
 
     @Override
-    public Ticket getTicket(final String ticketId, final Predicate<Ticket> predicate) {
+    protected Ticket getSingleTicket(final String ticketId, final Predicate<Ticket> predicate) {
         LOGGER.trace("Locating ticket [{}]", ticketId);
         val encodedTicketId = digestIdentifier(ticketId);
         if (StringUtils.isBlank(encodedTicketId)) {
@@ -97,17 +97,17 @@ public class CassandraTicketRegistry extends AbstractTicketRegistry implements D
     }
 
     @Override
-    public Ticket addSingleTicket(final Ticket ticket) throws Exception {
+    protected Ticket addSingleTicket(final Ticket ticket) throws Exception {
         return addTicketToCassandra(ticket, true);
     }
 
     @Override
-    public Ticket updateTicket(final Ticket ticket) throws Exception {
+    protected Ticket updateSingleTicket(final Ticket ticket) throws Exception {
         return addTicketToCassandra(ticket, false);
     }
 
     @Override
-    public Collection<Ticket> getTickets() {
+    protected Collection<Ticket> getAllTickets() {
         return ticketCatalog.findAll()
             .stream()
             .map(definition -> {
@@ -196,7 +196,7 @@ public class CassandraTicketRegistry extends AbstractTicketRegistry implements D
     }
 
     @Override
-    public Stream<? extends Ticket> stream(final TicketRegistryStreamCriteria criteria) {
+    protected Stream<? extends Ticket> streamTickets(final TicketRegistryStreamCriteria criteria) {
         return ticketCatalog
             .findAll()
             .stream()
@@ -210,7 +210,7 @@ public class CassandraTicketRegistry extends AbstractTicketRegistry implements D
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
+    protected Stream<? extends Ticket> streamSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
         val metadata = ticketCatalog.findTicketDefinition(TicketGrantingTicket.class).orElseThrow();
         val queryList = new ArrayList<String>();
         queryAttributes.forEach((key, values) ->

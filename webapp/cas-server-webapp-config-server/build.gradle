@@ -1,6 +1,5 @@
-apply plugin: "org.apereo.cas.project-conventions"
-
 apply plugin: "war"
+apply plugin: "org.apereo.cas.project-conventions"
 
 ext {
     mainClassName = "org.apereo.cas.CasConfigurationServerWebApplication"

@@ -3,14 +3,19 @@ package org.apereo.cas.web.flow.login;
 import module java.base;
 import org.apereo.cas.configuration.support.TriStateBoolean;
 import org.apereo.cas.monitor.Monitorable;
+import org.apereo.cas.protocol.ProtocolFinalResponseCapability;
+import org.apereo.cas.protocol.ProtocolFinalResponseContext;
 import org.apereo.cas.support.events.sso.CasSingleSignOnSessionCreatedEvent;
 import org.apereo.cas.ticket.TicketGrantingTicket;
+import org.apereo.cas.ticket.registry.TicketIssuanceMetadata;
 import org.apereo.cas.ticket.registry.TicketRegistry;
+import org.apereo.cas.ticket.registry.TicketIssuanceReadContext;
 import org.apereo.cas.web.cookie.CasCookieBuilder;
 import org.apereo.cas.web.flow.CasWebflowConstants;
 import org.apereo.cas.web.flow.SingleSignOnParticipationRequest;
 import org.apereo.cas.web.flow.SingleSignOnParticipationStrategy;
 import org.apereo.cas.web.flow.actions.BaseCasWebflowAction;
+import org.apereo.cas.web.support.ProtocolFinalResponsePolicyEnforcer;
 import org.apereo.cas.web.support.WebUtils;
 import org.apereo.cas.web.support.gen.CookieRetrievingCookieGenerator;
 import lombok.Getter;
@@ -85,7 +90,39 @@ public class SendTicketGrantingTicketAction extends BaseCasWebflowAction {
     }
 
     protected Event createSingleSignOnCookie(final RequestContext requestContext, final String ticketGrantingTicketId) {
-        val ticketGrantingTicket = ticketRegistry.getTicket(ticketGrantingTicketId);
+        val issuanceMetadata = WebUtils.getTicketGrantingTicketIssuanceMetadata(requestContext);
+        val ticketGrantingTicket = issuanceMetadata
+            .map(metadata -> ticketRegistry.getTicket(ticketGrantingTicketId,
+                TicketGrantingTicket.class,
+                TicketIssuanceReadContext.forIntent(metadata.intentId())))
+            .orElseGet(() -> ticketRegistry.getTicket(
+                ticketGrantingTicketId, TicketGrantingTicket.class));
+        issuanceMetadata.ifPresent(expected -> {
+            val actual = TicketIssuanceMetadata.from(ticketGrantingTicket).orElseThrow(() ->
+                new IllegalStateException(
+                    "Managed ticket-granting ticket lost its issuance metadata"));
+            if (!expected.equals(actual)) {
+                throw new IllegalStateException(
+                    "Ticket-granting ticket issuance metadata changed before final response");
+            }
+        });
+        val subjectId = issuanceMetadata
+            .map(metadata -> metadata.subjectId())
+            .orElseGet(() -> ticketGrantingTicket.getAuthentication().getPrincipal().getId());
+        val capability = issuanceMetadata
+            .map(metadata -> ProtocolFinalResponseCapability.managed(
+                ProtocolFinalResponseCapability.Type.CAS_TICKET_GRANTING_TICKET,
+                ticketGrantingTicketId, metadata.subjectId(), metadata.generation(),
+                metadata.intentId()))
+            .orElseGet(() -> ProtocolFinalResponseCapability.of(
+                ProtocolFinalResponseCapability.Type.CAS_TICKET_GRANTING_TICKET,
+                ticketGrantingTicketId));
+        val policyContext = ProtocolFinalResponseContext.of(
+            ProtocolFinalResponseContext.Protocol.CAS,
+            ProtocolFinalResponseContext.ResponseType.CAS_BROWSER_SSO_SESSION,
+            null, subjectId, capability);
+        ProtocolFinalResponsePolicyEnforcer.enforce(
+            requestContext.getActiveFlow().getApplicationContext(), policyContext);
         if (ticketGrantingTicket.isStateless()) {
             return result(CasWebflowConstants.TRANSITION_ID_WRITE_BROWSER_STORAGE,
                 new LocalAttributeMap<>(TicketGrantingTicket.class.getName(), ticketGrantingTicketId));

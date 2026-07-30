@@ -37,6 +37,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    if: ${{ github.repository == 'apereo/cas' }}
     outputs:
       is_snapshot: ${{ steps.check.outputs.is_snapshot }}
     steps:
@@ -59,7 +60,7 @@ jobs:
     needs: [ check ]
     permissions:
       contents: write
-    if: needs.check.outputs.is_snapshot == 'false'
+    if: ${{ github.repository == 'apereo/cas' && needs.check.outputs.is_snapshot == 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7

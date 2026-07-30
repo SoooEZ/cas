@@ -4,7 +4,17 @@ import module java.base;
 import org.apereo.cas.CasProtocolConstants;
 import org.apereo.cas.authentication.principal.WebApplicationService;
 import org.apereo.cas.mock.MockTicketGrantingTicket;
+import org.apereo.cas.protocol.ProtocolFinalResponseDecision;
+import org.apereo.cas.protocol.ProtocolFinalResponseDeniedException;
+import org.apereo.cas.protocol.ProtocolFinalResponsePolicy;
+import org.apereo.cas.ticket.PropertiesAwareTicket;
+import org.apereo.cas.ticket.TicketGrantingTicket;
+import org.apereo.cas.ticket.registry.TicketIssuanceMetadata;
+import org.apereo.cas.ticket.registry.TicketIssuanceReadContext;
+import org.apereo.cas.ticket.registry.TicketRegistry;
 import org.apereo.cas.util.MockRequestContext;
+import org.apereo.cas.web.cookie.CasCookieBuilder;
+import org.apereo.cas.web.flow.login.SendTicketGrantingTicketAction;
 import org.apereo.cas.web.support.WebUtils;
 import lombok.val;
 import org.junit.jupiter.api.Nested;
@@ -12,8 +22,11 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.webflow.execution.Action;
+import org.springframework.webflow.execution.Event;
+import org.springframework.webflow.execution.RequestContext;
 import jakarta.servlet.http.Cookie;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -25,6 +38,62 @@ import static org.mockito.Mockito.*;
 @Tag("WebflowActions")
 class SendTicketGrantingTicketActionTests {
     private static final String LOCALHOST_IP = "127.0.0.1";
+
+    @Test
+    void verifyManagedTicketDenialStopsCookieDisclosure() throws Throwable {
+        try (val policyApplicationContext = new GenericApplicationContext()) {
+            policyApplicationContext.registerBean(ProtocolFinalResponsePolicy.BEAN_NAME,
+                ProtocolFinalResponsePolicy.class,
+                () -> policyContext -> {
+                    val capability = policyContext.capabilities().getFirst();
+                    assertTrue(capability.isLifecycleManaged());
+                    assertEquals("subject-123", capability.subjectId());
+                    assertEquals(3L, capability.generation());
+                    assertEquals("intent-123", capability.intentId());
+                    return ProtocolFinalResponseDecision.deny("generation_closed");
+                });
+            policyApplicationContext.refresh();
+            val context = MockRequestContext.create(policyApplicationContext);
+            val ticket = mock(TicketGrantingTicket.class,
+                withSettings().extraInterfaces(PropertiesAwareTicket.class));
+            when(ticket.getId()).thenReturn("TGT-managed");
+            when(((PropertiesAwareTicket) ticket).getProperties()).thenReturn(Map.of(
+                TicketIssuanceMetadata.PROPERTY_SUBJECT_ID, "subject-123",
+                TicketIssuanceMetadata.PROPERTY_GENERATION, 3L,
+                TicketIssuanceMetadata.PROPERTY_INTENT_ID, "intent-123"));
+            WebUtils.putTicketGrantingTicketInScopes(context, ticket);
+
+            val ticketRegistry = mock(TicketRegistry.class);
+            when(ticketRegistry.getTicket(
+                eq("TGT-managed"), eq(TicketGrantingTicket.class),
+                eq(TicketIssuanceReadContext.forIntent("intent-123"))))
+                .thenReturn(ticket);
+            val cookieBuilder = mock(CasCookieBuilder.class);
+            val action = new TestableSendTicketGrantingTicketAction(
+                ticketRegistry, cookieBuilder, mock(SingleSignOnParticipationStrategy.class));
+
+            val denied = assertThrows(ProtocolFinalResponseDeniedException.class,
+                () -> action.createCookie(context, ticket.getId()));
+            assertEquals("generation_closed", denied.getDecision().reasonCode());
+            verify(cookieBuilder, never()).addCookie(any(), any(), anyBoolean(), anyString());
+        }
+    }
+
+    private static final class TestableSendTicketGrantingTicketAction
+        extends SendTicketGrantingTicketAction {
+
+        TestableSendTicketGrantingTicketAction(
+            final TicketRegistry ticketRegistry,
+            final CasCookieBuilder cookieBuilder,
+            final SingleSignOnParticipationStrategy participationStrategy) {
+            super(ticketRegistry, cookieBuilder, participationStrategy);
+        }
+
+        Event createCookie(final RequestContext context, final String ticketId) {
+            return createSingleSignOnCookie(context, ticketId);
+        }
+    }
+
     @Nested
     class PublicWorkstationCookie extends AbstractWebflowActionsTests {
         @Autowired

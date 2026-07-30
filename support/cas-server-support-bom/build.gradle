@@ -14,6 +14,7 @@ if (CasBuildSettings.isPublishFlag(project)) {
 def projectPath = project.path.toString()
 def projectVersion = project.version.toString()
 def projectGroupId = project.group.toString()
+def casIdpForkPublish = CasBuildSettings.isCasIdpForkPublish(project)
 def includedProjectPaths = CasBuildSettings.includedProjectPaths(project)
 def projectLibraries = PomXmlSupport.normalizeLibraries(CasBuildSettings.libraries)
 def managedDependencies = PomXmlSupport.uniqueDependencies([
@@ -38,6 +39,29 @@ dependencies {
 }
 
 publishing {
+    if (casIdpForkPublish) {
+        def forkRepositoryUri = uri(providers.systemProperty("casIdpForkRepositoryUrl")
+            .getOrElse("https://maven.pkg.github.com/SoooEZ/cas"))
+        if (!(forkRepositoryUri.scheme in ["file", "https"])) {
+            throw new GradleException(
+                "CAS-IDP fork publication repository must use file or https, not ${forkRepositoryUri.scheme}"
+            )
+        }
+        repositories {
+            maven {
+                name = "casIdpFork"
+                url = forkRepositoryUri
+                if (forkRepositoryUri.scheme == "https") {
+                    credentials {
+                        username = providers.systemProperty("casIdpForkRepositoryUser")
+                            .getOrElse(System.getenv("GITHUB_ACTOR") ?: "")
+                        password = providers.systemProperty("casIdpForkRepositoryToken")
+                            .getOrElse(System.getenv("GITHUB_TOKEN") ?: "")
+                    }
+                }
+            }
+        }
+    }
     publications {
         mavenJava(MavenPublication) {
             from components.javaPlatform
@@ -66,7 +90,7 @@ publishing {
                     properties.appendNode(ver.key, ver.value)
                 }
 
-                CasPomConfiguration.createPomRepositories(pomNode)
+                CasPomConfiguration.createPomRepositories(pomNode, casIdpForkPublish)
             }
 
             pom {
@@ -77,7 +101,8 @@ publishing {
 }
 
 signing {
-    required = CasBuildSettings.isPublishReleases(project) && !CasBuildSettings.isSkipArtifactSigning(project)
+    required = (CasBuildSettings.isPublishReleases(project) || casIdpForkPublish)
+        && !CasBuildSettings.isSkipArtifactSigning(project)
 
     if (System.getenv("PGP_PRIVATE_KEY") && System.getenv("PGP_PASSPHRASE")) {
         useInMemoryPgpKeys(

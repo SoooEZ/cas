@@ -4,7 +4,7 @@ import org.gradle.api.file.DuplicatesStrategy
 
 import java.net.ServerSocket
 
-if (project.ext.forceBootifulArtifact || (!publishFlag && !skipBootifulArtifact)) {
+if (project.ext.forceBootifulArtifact || (!artifactReleaseBuild && !skipBootifulArtifact)) {
     def projectGroup = CasBuildSettings.projectGroup(project)
     def projectVersion = CasBuildSettings.projectVersion(project)
 

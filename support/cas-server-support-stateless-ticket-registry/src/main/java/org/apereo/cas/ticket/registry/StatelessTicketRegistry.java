@@ -42,7 +42,7 @@ public class StatelessTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket getTicket(final String ticketId, final Predicate<Ticket> predicate) {
+    protected Ticket getSingleTicket(final String ticketId, final Predicate<Ticket> predicate) {
         return FunctionUtils.doAndHandle(() -> {
             val metadata = ticketCatalog.find(ticketId);
             val withoutPrefix = Strings.CI.removeStart(ticketId, metadata.getPrefix() + UniqueTicketIdGenerator.SEPARATOR);
@@ -66,7 +66,7 @@ public class StatelessTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket updateTicket(final Ticket ticket) throws Exception {
+    protected Ticket updateSingleTicket(final Ticket ticket) throws Exception {
         return compactTicket(ticket);
     }
 

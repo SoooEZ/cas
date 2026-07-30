@@ -142,8 +142,6 @@ public class CasRedisTicketRegistryAutoConfiguration {
         public MessageListener redisTicketRegistryMessageListener(
             @Qualifier("ticketRedisTemplate")
             final CasRedisTemplate<String, RedisTicketDocument> ticketRedisTemplate,
-            @Qualifier(RedisKeyGeneratorFactory.BEAN_NAME)
-            final RedisKeyGeneratorFactory redisKeyGeneratorFactory,
             @Qualifier("redisTicketRegistryMessageIdentifier")
             final PublisherIdentifier redisTicketRegistryMessageIdentifier,
             @Qualifier("redisTicketRegistryCache")
@@ -152,7 +150,7 @@ public class CasRedisTicketRegistryAutoConfiguration {
             final TicketRegistry ticketRegistry) {
             val adapter = new MessageListenerAdapter(
                 new DefaultRedisTicketRegistryMessageListener(ticketRegistry, redisTicketRegistryMessageIdentifier,
-                    redisKeyGeneratorFactory, redisTicketRegistryCache));
+                    redisTicketRegistryCache));
             adapter.setSerializer(ticketRedisTemplate.getValueSerializer());
             adapter.setStringSerializer((RedisSerializer<String>) ticketRedisTemplate.getKeySerializer());
             return adapter;

@@ -39,6 +39,7 @@ fileTemplates/
 nodejs
 .gradle/
 build/
+/.casidp-release/
 MANIFEST.MF
 classes/
 *.bin

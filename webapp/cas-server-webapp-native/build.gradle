@@ -6,6 +6,7 @@ import org.gradle.api.artifacts.ProjectDependency
 description = "Builds the CAS web application for GraalVM native image deployments."
 
 def skipAot = providers.systemProperty("skipAot").getOrElse("false") == "true"
+def casProjectGroup = CasBuildSettings.projectGroup(project)
 
 apply plugin: "java"
 if (skipAot) {
@@ -51,7 +52,7 @@ configurations {
             def hasLogback = deps.any { dependency ->
                 dependency instanceof ProjectDependency
                     ? dependency.path == ':support:cas-server-support-logback'
-                    : dependency.group == 'org.apereo.cas' && dependency.name == 'cas-server-support-logback'
+                    : dependency.group == casProjectGroup && dependency.name == 'cas-server-support-logback'
             }
             if (hasLogback) {
                 it.exclude(group: "org.apache.logging.log4j", module: "log4j-api")
@@ -60,7 +61,7 @@ configurations {
                 it.exclude(group: "org.apache.logging.log4j", module: "log4j-jcl")
                 it.exclude(group: "org.apache.logging.log4j", module: "log4j-slf4j-impl")
                 it.exclude(group: "org.apache.logging.log4j", module: "log4j-slf4j2-impl")
-                it.exclude(group: "org.apereo.cas", module: "cas-server-core-logging")
+                it.exclude(group: casProjectGroup, module: "cas-server-core-logging")
             }
         }
         /*

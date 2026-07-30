@@ -51,6 +51,16 @@ final class CasBuildSettings {
         isPublishSnapshots(project) || isPublishReleases(project)
     }
 
+    static boolean isCasIdpForkPublish(final Project project) {
+        project.providers.systemProperty('casIdpForkPublish')
+            .map { value -> Boolean.parseBoolean(value) }
+            .getOrElse(false)
+    }
+
+    static boolean isArtifactReleaseBuild(final Project project) {
+        isPublishFlag(project) || isCasIdpForkPublish(project)
+    }
+
     static boolean isPublishMinimalArtifacts(final Project project) {
         project.providers.systemProperty('publishMinimalArtifacts').present
     }
@@ -69,6 +79,9 @@ final class CasBuildSettings {
 
     static boolean isSkipArtifactSigning(final Project project) {
         project.providers.systemProperty('skipArtifactSigning').present
+            || project.providers.gradleProperty('skipArtifactSigning')
+                .map { value -> Boolean.parseBoolean(value) }
+                .getOrElse(false)
     }
 
     static boolean isTerminateCompilerOnWarning(final Project project) {
@@ -100,7 +113,7 @@ final class CasBuildSettings {
     }
 
     static boolean isGenerateGitProperties(final Project project) {
-        isPublishFlag(project) || project.providers.systemProperty('generateGitProperties').present
+        isArtifactReleaseBuild(project) || project.providers.systemProperty('generateGitProperties').present
     }
 
     static boolean isGenerateTimestamps(final Project project) {
@@ -141,6 +154,8 @@ final class CasBuildSettings {
         project.ext.set('publishSnapshots', isPublishSnapshots(project))
         project.ext.set('publishReleases', isPublishReleases(project))
         project.ext.set('publishFlag', isPublishFlag(project))
+        project.ext.set('casIdpForkPublish', isCasIdpForkPublish(project))
+        project.ext.set('artifactReleaseBuild', isArtifactReleaseBuild(project))
         project.ext.set('publishMinimalArtifacts', isPublishMinimalArtifacts(project))
         project.ext.set('skipBootifulArtifact', isSkipBootifulArtifact(project))
         project.ext.set('skipErrorProneCompiler', isSkipErrorProneCompiler(project))
@@ -303,9 +318,6 @@ final class CasBuildSettings {
         project.gradle.startParameter.taskNames.any { it == taskName || it.endsWith(":${taskName}") }
     }
 }
-
-
-
 
 
 

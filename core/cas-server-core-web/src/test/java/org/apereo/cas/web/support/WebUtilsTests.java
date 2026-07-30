@@ -8,7 +8,9 @@ import org.apereo.cas.authentication.credential.OneTimeTokenCredential;
 import org.apereo.cas.authentication.credential.UsernamePasswordCredential;
 import org.apereo.cas.configuration.model.support.captcha.GoogleRecaptchaProperties;
 import org.apereo.cas.services.RegisteredServiceTestUtils;
+import org.apereo.cas.ticket.PropertiesAwareTicket;
 import org.apereo.cas.ticket.Ticket;
+import org.apereo.cas.ticket.registry.TicketIssuanceMetadata;
 import org.apereo.cas.ticket.registry.TicketRegistrySupport;
 import org.apereo.cas.util.MockRequestContext;
 import org.apereo.cas.util.http.HttpRequestUtils;
@@ -35,6 +37,25 @@ import static org.mockito.Mockito.*;
  */
 @Tag("Utility")
 class WebUtilsTests {
+
+    @Test
+    void verifyTicketGrantingTicketIssuanceMetadataFollowsExactTicketScope() throws Throwable {
+        val context = MockRequestContext.create();
+        val ticket = mock(Ticket.class, withSettings().extraInterfaces(PropertiesAwareTicket.class));
+        val metadata = new TicketIssuanceMetadata("subject-1", 3, "intent-1");
+        when(ticket.getId()).thenReturn("TGT-managed");
+        when(((PropertiesAwareTicket) ticket).getProperties()).thenReturn(Map.of(
+            TicketIssuanceMetadata.PROPERTY_SUBJECT_ID, metadata.subjectId(),
+            TicketIssuanceMetadata.PROPERTY_GENERATION, metadata.generation(),
+            TicketIssuanceMetadata.PROPERTY_INTENT_ID, metadata.intentId()));
+
+        WebUtils.putTicketGrantingTicketInScopes(context, ticket);
+        assertEquals(metadata,
+            WebUtils.getTicketGrantingTicketIssuanceMetadata(context).orElseThrow());
+
+        WebUtils.putTicketGrantingTicketInScopes(context, "TGT-unmanaged");
+        assertTrue(WebUtils.getTicketGrantingTicketIssuanceMetadata(context).isEmpty());
+    }
 
     @Test
     void verifyOperation() throws Throwable {

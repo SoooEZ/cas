@@ -42,12 +42,12 @@ public class DynamoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsFor(final String principalId) {
+    protected Stream<? extends Ticket> streamSessionsFor(final String principalId) {
         return dbTableService.getSessionsFor(digestIdentifier(principalId));
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
+    protected Stream<? extends Ticket> streamSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
         val filterExpressions = new ArrayList<String>();
         val expressionValues = new HashMap<String, AttributeValue>();
         val expressionAttrNames = new HashMap<String, String>();
@@ -81,7 +81,7 @@ public class DynamoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Stream<? extends Ticket> getTicketsFor(final Service service) {
+    protected Stream<? extends Ticket> streamTicketsFor(final Service service) {
         return dbTableService.getTicketsFor(service)
             .map(this::decodeTicket)
             .filter(Objects::nonNull);
@@ -97,7 +97,7 @@ public class DynamoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public List<? extends Ticket> addTicket(final Stream<? extends Ticket> toSave) {
+    protected List<? extends Ticket> addTickets(final Stream<? extends Ticket> toSave) {
         val initialList = toSave.toList();
         val toPut = initialList.stream().map(Unchecked.function(this::toTicketPayload));
         dbTableService.put(toPut);
@@ -105,7 +105,7 @@ public class DynamoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket addSingleTicket(final Ticket ticket) {
+    protected Ticket addSingleTicket(final Ticket ticket) {
         FunctionUtils.doAndHandle(_ -> {
             LOGGER.debug("Adding ticket [{}] with ttl [{}s]", ticket.getId(),
                 ticket.getExpirationPolicy().getTimeToLive());
@@ -115,7 +115,7 @@ public class DynamoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket getTicket(final String ticketId, final Predicate<Ticket> predicate) {
+    protected Ticket getSingleTicket(final String ticketId, final Predicate<Ticket> predicate) {
         val encTicketId = digestIdentifier(ticketId);
         if (StringUtils.isBlank(encTicketId)) {
             return null;
@@ -135,12 +135,12 @@ public class DynamoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Collection<? extends Ticket> getTickets() {
+    protected Collection<? extends Ticket> getAllTickets() {
         return decodeTickets(dbTableService.getAll());
     }
 
     @Override
-    public Stream<? extends Ticket> stream(final TicketRegistryStreamCriteria criteria) {
+    protected Stream<? extends Ticket> streamTickets(final TicketRegistryStreamCriteria criteria) {
         return dbTableService
             .stream()
             .skip(criteria.getFrom())
@@ -149,8 +149,8 @@ public class DynamoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket updateTicket(final Ticket ticket) throws Exception {
-        addTicket(ticket);
+    protected Ticket updateSingleTicket(final Ticket ticket) throws Exception {
+        addSingleTicket(ticket);
         return ticket;
     }
 
@@ -176,7 +176,7 @@ public class DynamoDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public List<? extends Serializable> query(final TicketRegistryQueryCriteria criteria) {
+    protected List<? extends Serializable> queryTickets(final TicketRegistryQueryCriteria criteria) {
         if (StringUtils.isNotBlank(criteria.getId())) {
             val ticket = dbTableService.get(criteria.getId(), digestIdentifier(criteria.getId()));
             if (ticket == null) {

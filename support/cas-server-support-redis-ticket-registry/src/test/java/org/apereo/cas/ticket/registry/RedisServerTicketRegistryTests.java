@@ -12,6 +12,7 @@ import org.apereo.cas.config.CasRedisTicketRegistryAutoConfiguration;
 import org.apereo.cas.redis.core.CasRedisTemplate;
 import org.apereo.cas.services.RegisteredServiceTestUtils;
 import org.apereo.cas.test.CasTestExtension;
+import org.apereo.cas.ticket.InvalidTicketException;
 import org.apereo.cas.ticket.ProxyGrantingTicketImpl;
 import org.apereo.cas.ticket.ServiceTicket;
 import org.apereo.cas.ticket.Ticket;
@@ -155,7 +156,41 @@ class RedisServerTicketRegistryTests {
         "cas.ticket.registry.redis.crypto.signing.key=cAPyoHMrOMWrwydOXzBA-ufZQM-TilnLjbRgMQWlUlwFmy07bOtAgCIdNBma3c5P4ae_JV6n1OpOAYqSh2NkmQ"
     })
     class WithoutRedisModulesTests extends BaseRedisSentinelTicketRegistryTests {
+        @Autowired
+        @Qualifier("redisTicketRegistryCache")
+        private Cache<String, Ticket> redisTicketRegistryCache;
 
+        @Autowired
+        @Qualifier(RedisKeyGeneratorFactory.BEAN_NAME)
+        private RedisKeyGeneratorFactory redisKeyGeneratorFactory;
+
+        @RepeatedTest(1)
+        void verifyAuthoritativeSourceReadBypassesStaleNearCache() throws Throwable {
+            val authentication = CoreAuthenticationTestUtils.getAuthentication(
+                UUID.randomUUID().toString());
+            val ticketId = new TicketGrantingTicketIdGenerator(
+                10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            val ticket = new TicketGrantingTicketImpl(
+                ticketId, authentication, NeverExpiresExpirationPolicy.INSTANCE);
+            val registry = getNewTicketRegistry();
+            registry.addTicket(ticket);
+
+            assertNotNull(registry.getTicket(ticketId));
+            val keyGenerator = redisKeyGeneratorFactory
+                .getRedisKeyGenerator(ticket.getPrefix())
+                .orElseThrow();
+            val redisKey = keyGenerator.forPrefixAndId(
+                ticket.getPrefix(), registry.digestIdentifier(ticketId));
+            assertTrue(ticketRedisTemplate.delete(redisKey));
+
+            assertNotNull(registry.getTicket(ticketId));
+            assertThrows(InvalidTicketException.class,
+                () -> registry.getTicketFromSource(
+                    ticketId, TicketGrantingTicket.class));
+            assertNull(redisTicketRegistryCache.getIfPresent(
+                registry.digestIdentifier(ticketId)));
+        }
     }
 
     @Nested
@@ -177,7 +212,7 @@ class RedisServerTicketRegistryTests {
         @Autowired
         @Qualifier("redisTicketRegistryCache")
         private Cache<String, Ticket> redisTicketRegistryCache;
-        
+
         @RepeatedTest(1)
         @Tag("TicketRegistryTestWithEncryption")
         void verifyDeleteTicketsForWithCacheAndListener() throws Throwable {

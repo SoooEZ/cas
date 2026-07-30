@@ -35,7 +35,9 @@ TestCategories.values().each { testCategory ->
                     includeTags testCategory.name()
                 }
 
-                def ptsEnabled = shouldWeTest && testCategory.ptsEnabled && Boolean.valueOf(System.getProperty('PTS_ENABLED') ?: 'true') && !publishReleases
+                def ptsEnabled = shouldWeTest && testCategory.ptsEnabled
+                    && Boolean.valueOf(System.getProperty('PTS_ENABLED') ?: 'true')
+                    && !publishReleases && !casIdpForkPublish
                 develocity.predictiveTestSelection {
                     enabled = ptsEnabled
                     mergeCodeCoverage = true
@@ -187,11 +189,7 @@ tasks.withType(Test).configureEach {
 }
 
 def shouldTest(final Set sourceTestDirectories, final String category) {
-    def foundTest = gradle.startParameter.taskNames.any { task -> task.matches(/^test${category}$/) }
-    if (!foundTest) {
-        logger.debug "No tests with category ${category} found"
-    }
-    !providers.systemProperty('skipTests').present && foundTest && hasTestsOfCategory(sourceTestDirectories, category)
+    !providers.systemProperty('skipTests').present && hasTestsOfCategory(sourceTestDirectories, category)
 }
 
 def hasTestsOfCategory(final Set sourceTestDirectories, final String category) {
@@ -270,4 +268,3 @@ def loadTagsFromCache(final Set sourceTestDirectories) {
     ])
     tags
 }
-

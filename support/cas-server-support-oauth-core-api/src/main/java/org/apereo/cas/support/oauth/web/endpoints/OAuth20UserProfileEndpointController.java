@@ -119,10 +119,19 @@ public class OAuth20UserProfileEndpointController<T extends OAuth20Configuration
                 ticketRegistry.deleteTicket(accessTokenTicket.getId());
             } else {
                 ticketRegistry.updateTicket(accessTokenTicket);
-                FunctionUtils.doIfNull(accessTokenTicket.getTicketGrantingTicket(), ticket -> {
-                    val tgt = ticketRegistry.getTicket(ticket.getId(), TicketGrantingTicket.class);
-                    ticketRegistry.updateTicket(tgt.update());
-                });
+                val ticketGrantingTicket = accessTokenTicket.getTicketGrantingTicket();
+                if (ticketGrantingTicket != null) {
+                    val storedTicketGrantingTicket = ticketRegistry.getTicket(
+                        ticketGrantingTicket.getId(), TicketGrantingTicket.class);
+                    if (storedTicketGrantingTicket == null) {
+                        throw new IllegalStateException(
+                            "Unable to locate the ticket-granting ticket referenced by the access token");
+                    }
+                    if (ticketRegistry.updateTicket(storedTicketGrantingTicket.update()) == null) {
+                        throw new IllegalStateException(
+                            "Unable to persist the ticket-granting ticket referenced by the access token");
+                    }
+                }
             }
         }
     }

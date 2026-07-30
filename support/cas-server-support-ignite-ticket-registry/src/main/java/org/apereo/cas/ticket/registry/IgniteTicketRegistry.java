@@ -48,7 +48,7 @@ public class IgniteTicketRegistry extends AbstractTicketRegistry implements Disp
     }
 
     @Override
-    public Ticket addSingleTicket(final Ticket ticket) throws Exception {
+    protected Ticket addSingleTicket(final Ticket ticket) throws Exception {
         val encodedTicket = encodeTicket(ticket);
         val metadata = ticketCatalog.find(ticket);
 
@@ -111,7 +111,7 @@ public class IgniteTicketRegistry extends AbstractTicketRegistry implements Disp
     }
 
     @Override
-    public @Nullable Ticket getTicket(final String ticketIdToGet, final Predicate<Ticket> predicate) {
+    protected @Nullable Ticket getSingleTicket(final String ticketIdToGet, final Predicate<Ticket> predicate) {
         val ticketId = digestIdentifier(ticketIdToGet);
         if (StringUtils.isBlank(ticketId)) {
             return null;
@@ -136,20 +136,20 @@ public class IgniteTicketRegistry extends AbstractTicketRegistry implements Disp
     }
 
     @Override
-    public Collection<? extends Ticket> getTickets() {
-        try (val stream = stream()) {
+    protected Collection<? extends Ticket> getAllTickets() {
+        try (val stream = streamTickets(TicketRegistryStreamCriteria.builder().build())) {
             return stream.collect(Collectors.toSet());
         }
     }
 
     @Override
-    public Ticket updateTicket(final Ticket ticket) throws Exception {
-        addTicket(ticket);
+    protected Ticket updateSingleTicket(final Ticket ticket) throws Exception {
+        addSingleTicket(ticket);
         return ticket;
     }
 
     @Override
-    public Stream<? extends Ticket> stream(final TicketRegistryStreamCriteria criteria) {
+    protected Stream<? extends Ticket> streamTickets(final TicketRegistryStreamCriteria criteria) {
         return ticketCatalog
             .findAll()
             .stream()
@@ -185,7 +185,7 @@ public class IgniteTicketRegistry extends AbstractTicketRegistry implements Disp
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsFor(final String principalId) {
+    protected Stream<? extends Ticket> streamSessionsFor(final String principalId) {
         val metadata = ticketCatalog.findTicketDefinition(TicketGrantingTicket.class).orElseThrow();
         val sql = "SELECT * FROM %s where principal=?".formatted(metadata.getProperties().getStorageName());
         try (val rs = ignite.sql().execute(null, sql, digestIdentifier(principalId))) {
@@ -217,7 +217,7 @@ public class IgniteTicketRegistry extends AbstractTicketRegistry implements Disp
     }
 
     @Override
-    public Stream<? extends Ticket> getSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
+    protected Stream<? extends Ticket> streamSessionsWithAttributes(final Map<String, List<Object>> queryAttributes) {
         val metadata = ticketCatalog.findTicketDefinition(TicketGrantingTicket.class).orElseThrow();
         val sql = new StringBuilder(String.format("SELECT * FROM %s WHERE prefix='%s' AND (",
             metadata.getProperties().getStorageName(), metadata.getPrefix()));

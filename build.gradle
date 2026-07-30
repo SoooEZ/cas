@@ -6,6 +6,9 @@ import org.gradle.api.attributes.Category
 import org.gradle.api.attributes.DocsType
 import org.gradle.api.attributes.LibraryElements
 import org.gradle.api.attributes.Usage
+import org.cyclonedx.Version
+import org.cyclonedx.model.Component
+import org.cyclonedx.parsers.JsonParser
 
 import java.util.concurrent.ConcurrentHashMap
 
@@ -27,6 +30,7 @@ buildscript {
 
     dependencies {
         classpath rootProject.libs.gradle.plugin.spring.boot
+        classpath rootProject.libs.gradle.plugin.cyclonedx
         classpath rootProject.libs.gradle.plugin.git.properties
         classpath rootProject.libs.gradle.plugin.lombok
         classpath rootProject.libs.gradle.plugin.native
@@ -51,6 +55,10 @@ ext {
 
     publishFlag = publishSnapshots || publishReleases
 
+    casIdpForkPublish = providers.systemProperty("casIdpForkPublish")
+        .map(String::toBoolean).getOrElse(false)
+    artifactReleaseBuild = publishFlag || casIdpForkPublish
+
     publishMinimalArtifacts = providers.systemProperty("publishMinimalArtifacts").present
 
     skipBootifulArtifact = providers.systemProperty("skipBootifulArtifact").present
@@ -59,14 +67,18 @@ ext {
     publicationType = providers.systemProperty("publishingType").getOrElse("AUTOMATIC")
 
     skipArtifactSigning = providers.systemProperty("skipArtifactSigning").present
+        || providers.gradleProperty("skipArtifactSigning")
+            .map(String::toBoolean).getOrElse(false)
     terminateCompilerOnWarning = providers.systemProperty("terminateCompilerOnWarning").getOrElse("true") == "true"
     skipNullAway = providers.systemProperty("skipNullAway").getOrElse("false") == "true"
     skipHotSwapAgent = providers.systemProperty("skipHotSwapAgent").getOrElse("false") == "true"
 
     enableRemoteDebugging = providers.systemProperty("enableRemoteDebugging").present
     remoteDebuggingSuspend = providers.systemProperty("remoteDebuggingSuspend").getOrElse("false") == "true" ? "y" : "n"
-    generateGitProperties = publishFlag || providers.systemProperty("generateGitProperties").present
-    generateTimestamps = publishFlag || providers.systemProperty("generateTimestamps").present
+    generateGitProperties = artifactReleaseBuild
+        || providers.systemProperty("generateGitProperties").present
+    generateTimestamps = publishFlag
+        || providers.systemProperty("generateTimestamps").present
 
 
     excludedFilesFromTestCoverage = [
@@ -76,6 +88,37 @@ ext {
 
 apply plugin: "org.apereo.cas.root-conventions"
 apply plugin: "org.apereo.cas.overrides-conventions"
+
+def casIdpCycloneDxRequested = gradle.startParameter.taskNames.any {
+    it.tokenize(':').last() in ['cyclonedxBom', 'validateCasIdpCycloneDxBom']
+}
+if (casIdpCycloneDxRequested) {
+    apply plugin: "org.cyclonedx.bom"
+
+    tasks.named('cyclonedxBom') {
+        projectType = Component.Type.FRAMEWORK
+        schemaVersion = Version.VERSION_16
+        includeBomSerialNumber = false
+        includeBuildSystem = false
+        componentGroup = project.group.toString()
+        componentName = 'cas-server-fork'
+        componentVersion = project.version.toString()
+        jsonOutput.set(layout.buildDirectory.file('reports/cyclonedx/bom.json'))
+        xmlOutput.unsetConvention()
+    }
+
+    tasks.register('validateCasIdpCycloneDxBom') {
+        dependsOn tasks.named('cyclonedxBom')
+        def bomFile = layout.buildDirectory.file('reports/cyclonedx/bom.json')
+        inputs.file(bomFile)
+        doLast {
+            def validationErrors = new JsonParser().validate(bomFile.get().asFile, Version.VERSION_16)
+            if (!validationErrors.isEmpty()) {
+                throw new GradleException("CycloneDX 1.6 schema validation failed:\n${validationErrors.join('\n')}")
+            }
+        }
+    }
+}
 
 if (publishReleases || publishSnapshots) {
     apply plugin: "com.gradleup.nmcp.aggregation"
@@ -132,7 +175,7 @@ if (!providers.systemProperty("skipSonarqube").present && sonarqubeRequested) {
     }
 }
 
-if (CasBuildSettings.isJavadocRequested(gradle, project) || CasBuildSettings.isPublishReleases(project)) {
+if (CasBuildSettings.isJavadocRequested(gradle, project) || CasBuildSettings.isArtifactReleaseBuild(project)) {
     def aggregateJavadocProjectPaths = CasBuildSettings.includedProjectPaths(project)
         .findAll { projectPath -> projectPath != project.path && CasBuildSettings.isJavadocEnabled(project, projectPath) }
         .findAll { projectPath -> projectPath != ':support:cas-server-support-bom' }
@@ -184,7 +227,9 @@ if (CasBuildSettings.isJavadocRequested(gradle, project) || CasBuildSettings.isP
         classpath = aggregateJavadocClasspath
         destinationDir = new File(project.layout.buildDirectory.getAsFile().get(), 'javadoc')
         options.addBooleanOption('html5', true)
-        failOnError = CasBuildSettings.isPublishFlag(project) ? false : providers.systemProperty('ignoreJavadocFailures').present
+        failOnError = CasBuildSettings.isArtifactReleaseBuild(project)
+            ? false
+            : providers.systemProperty('ignoreJavadocFailures').present
     }
 
     tasks.register('aggregateJavadocsIntoJar', Jar) {
@@ -195,7 +240,7 @@ if (CasBuildSettings.isJavadocRequested(gradle, project) || CasBuildSettings.isP
     }
 }
 
-if (rootProject.publishFlag) {
+if (rootProject.artifactReleaseBuild) {
     tasks.register('rootSourcesJar', Jar) {
         description = "Build JAR for the root CAS module"
         archiveBaseName.set("${project.name}-sources")
@@ -220,7 +265,7 @@ tasks.register('gradleHome') {
     }
 }
 
-if (rootProject.publishFlag && !rootProject.publishMinimalArtifacts) {
+if (rootProject.artifactReleaseBuild && !rootProject.publishMinimalArtifacts) {
     artifacts {
         if (!rootProject.publishSnapshots) {
             archives tasks.named('aggregateJavadocsIntoJar')

@@ -48,7 +48,7 @@ public class CosmosDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public @Nullable Ticket getTicket(final String ticketId, final Predicate<Ticket> predicate) {
+    protected @Nullable Ticket getSingleTicket(final String ticketId, final Predicate<Ticket> predicate) {
         try {
             val encTicketId = digestIdentifier(ticketId);
             val metadata = StringUtils.isNotBlank(ticketId) ? ticketCatalog.find(ticketId) : null;
@@ -89,7 +89,7 @@ public class CosmosDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Collection<? extends Ticket> getTickets() {
+    protected Collection<? extends Ticket> getAllTickets() {
         val readOps = ticketCatalog.findAll()
             .stream()
             .map(defn -> {
@@ -115,8 +115,8 @@ public class CosmosDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public Ticket updateTicket(final Ticket ticket) throws Exception {
-        return addTicket(ticket);
+    protected Ticket updateSingleTicket(final Ticket ticket) throws Exception {
+        return addSingleTicket(ticket);
     }
 
     @Override
@@ -138,7 +138,7 @@ public class CosmosDbTicketRegistry extends AbstractTicketRegistry {
     }
 
     @Override
-    public List<? extends Ticket> addTicket(final Stream<? extends Ticket> toSave) {
+    protected List<? extends Ticket> addTickets(final Stream<? extends Ticket> toSave) {
         val operations = new HashMap<String, List<CosmosItemOperation>>();
         val results = toSave.peek(ticket -> {
             val ticketDefinition = ticketCatalog.find(ticket);
