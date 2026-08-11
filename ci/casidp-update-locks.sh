@@ -8,6 +8,7 @@ readonly SETTINGS_LOCK="${ROOT_DIR}/settings-gradle.lockfile"
 readonly VERIFICATION_METADATA="${ROOT_DIR}/gradle/verification-metadata.xml"
 readonly -a LOCKFILES=(
     "${ROOT_DIR}/gradle.lockfile"
+    "${ROOT_DIR}/core/cas-server-core-web/gradle.lockfile"
     "${ROOT_DIR}/docs/cas-server-documentation-processor/gradle.lockfile"
     "${ROOT_DIR}/webapp/cas-server-webapp/gradle.lockfile"
     "${ROOT_DIR}/webapp/cas-server-webapp-native/gradle.lockfile"
@@ -26,6 +27,7 @@ readonly -a GRADLE_COMMON_ARGUMENTS=(
 )
 readonly -a LOCK_GRAPH_ARGUMENTS=(
     ':dependencies'
+    ':core:cas-server-core-web:dependencies'
     ':docs:cas-server-documentation-processor:dependencies'
     ':webapp:cas-server-webapp:dependencies'
     ':webapp:cas-server-webapp-native:dependencies'
@@ -153,4 +155,4 @@ for index, value in enumerate(sys.argv[2:]):
     print(f"Stable SHA-256 {hashlib.sha256(actual).hexdigest()}  {lockfile}")
 PY
 
-printf 'All six strict dependency locks are byte-stable.\n'
+printf 'All seven strict dependency locks are byte-stable.\n'

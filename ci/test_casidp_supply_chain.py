@@ -55,6 +55,37 @@ class ReleaseDriverSourceTests(unittest.TestCase):
         self.assertIn("--tests org.apereo.cas.protocol", exact_tests)
         self.assertNotIn("\n        build \\\n", exact_tests)
 
+    def test_core_web_compatibility_regression_is_in_exact_inventory(self) -> None:
+        build_block = self.source.split("build_candidate() {", 1)[1].split(
+            "\nnormalize_resolved_sbom() {", 1
+        )[0]
+        self.assertEqual(
+            1,
+            build_block.count(":core:cas-server-core-web:testWeb \\\n"),
+        )
+        self.assertEqual(
+            1,
+            build_block.count(
+                "--tests org.apereo.cas.config."
+                "CasCoreWebFinalResponsePolicyTests \\\n"
+            ),
+        )
+        self.assertIn(
+            "testWeb/TEST-org.apereo.cas.config."
+            "CasCoreWebFinalResponsePolicyTests.xml:2",
+            build_block,
+        )
+
+    def test_mutable_maven_metadata_is_removed_before_repository_audit(self) -> None:
+        candidate_block = self.source.split(
+            "build_unsigned_candidate_once() {", 1
+        )[1].split("\n}", 1)[0]
+        self.assertIn(
+            "publish_to_staging\n    remove_mutable_maven_metadata\n"
+            "    audit_staging_repository",
+            candidate_block,
+        )
+
     def test_every_gradle_phase_rechecks_dependency_trust_inputs(self) -> None:
         self.assertEqual(
             5,
@@ -74,6 +105,7 @@ class ReleaseDriverSourceTests(unittest.TestCase):
         for path in (
             "gradle/verification-metadata.xml",
             "gradle.lockfile",
+            "core/cas-server-core-web/gradle.lockfile",
             "docs/cas-server-documentation-processor/gradle.lockfile",
             "webapp/cas-server-webapp/gradle.lockfile",
             "webapp/cas-server-webapp-native/gradle.lockfile",
@@ -110,6 +142,12 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             self.source,
         )
 
+    def test_exact_web_security_runtime_is_a_required_lock_state(self) -> None:
+        self.assertIn(
+            '":core:cas-server-core-web": {"testRuntimeClasspath"}',
+            self.source,
+        )
+
 
 class LockUpdateHelperTests(unittest.TestCase):
     @staticmethod
@@ -117,6 +155,7 @@ class LockUpdateHelperTests(unittest.TestCase):
         for directory in (
             root / "ci",
             root / "gradle",
+            root / "core/cas-server-core-web",
             root / "docs/cas-server-documentation-processor",
             root / "webapp/cas-server-webapp",
             root / "webapp/cas-server-webapp-native",
@@ -156,6 +195,7 @@ set -euo pipefail
 printf '%s\\n' "$*" >> gradle-arguments.log
 for path in \\
     gradle.lockfile \\
+    core/cas-server-core-web/gradle.lockfile \\
     docs/cas-server-documentation-processor/gradle.lockfile \\
     webapp/cas-server-webapp/gradle.lockfile \\
     webapp/cas-server-webapp-native/gradle.lockfile \\
@@ -187,7 +227,7 @@ printf 'incidental-settings-lock\\n' > settings-gradle.lockfile
             )
             self.assertFalse((root / "settings-gradle.lockfile").exists())
             self.assertIn(
-                "All six strict dependency locks are byte-stable.", result.stdout
+                "All seven strict dependency locks are byte-stable.", result.stdout
             )
 
     def test_preflight_rejects_lock_symlink_before_gradle_runs(self) -> None:
@@ -223,6 +263,7 @@ touch gradle-ran
 set -euo pipefail
 for path in \\
     gradle.lockfile \\
+    core/cas-server-core-web/gradle.lockfile \\
     docs/cas-server-documentation-processor/gradle.lockfile \\
     webapp/cas-server-webapp/gradle.lockfile \\
     webapp/cas-server-webapp-native/gradle.lockfile \\
@@ -243,6 +284,100 @@ printf 'incidental-settings-lock\\n' > settings-gradle.lockfile
                 result.stderr,
             )
             self.assertFalse((root / "settings-gradle.lockfile").exists())
+
+
+class MutableMavenMetadataTests(unittest.TestCase):
+    @staticmethod
+    @contextmanager
+    def fixture() -> Iterator[tuple[Path, Path, Path]]:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            repository = root / "repository"
+            artifact_root = repository / "io/github/soooez/cas/module"
+            version_root = artifact_root / "8.0.0-casidp.2"
+            version_root.mkdir(parents=True)
+            (version_root / "module-8.0.0-casidp.2.pom").write_text(
+                "<project/>\n", encoding="utf-8"
+            )
+            metadata = artifact_root / "maven-metadata.xml"
+            metadata.write_text("<metadata/>\n", encoding="utf-8")
+            metadata.with_name("maven-metadata.xml.sha256").write_text(
+                "0" * 64 + "\n", encoding="utf-8"
+            )
+            graph = root / "publish-task-graph.json"
+            graph.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "projectCount": 1,
+                        "projects": [
+                            {
+                                "path": ":module",
+                                "artifactId": "module",
+                                "publication": "MavenJava",
+                                "task": (
+                                    ":module:publishMavenJavaPublicationTo"
+                                    "CasIdpForkRepository"
+                                ),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            yield repository, graph, metadata
+
+    @staticmethod
+    def arguments(repository: Path, graph: Path) -> argparse.Namespace:
+        return argparse.Namespace(
+            repository=str(repository),
+            task_graph=str(graph),
+            group="io.github.soooez.cas",
+            version="8.0.0-casidp.2",
+        )
+
+    def test_removes_only_artifact_root_metadata_and_checksums(self) -> None:
+        with self.fixture() as (repository, graph, metadata):
+            pom = (
+                metadata.parent
+                / "8.0.0-casidp.2/module-8.0.0-casidp.2.pom"
+            )
+
+            AUDITOR.remove_mutable_maven_metadata(
+                self.arguments(repository, graph)
+            )
+
+            self.assertFalse(metadata.exists())
+            self.assertFalse(
+                metadata.with_name("maven-metadata.xml.sha256").exists()
+            )
+            self.assertEqual("<project/>\n", pom.read_text(encoding="utf-8"))
+
+    def test_unknown_non_version_file_fails_before_any_removal(self) -> None:
+        with self.fixture() as (repository, graph, metadata):
+            unknown = metadata.parent / "unexpected.xml"
+            unknown.write_text("unexpected\n", encoding="utf-8")
+
+            with self.assertRaises(AUDITOR.AuditError):
+                AUDITOR.remove_mutable_maven_metadata(
+                    self.arguments(repository, graph)
+                )
+
+            self.assertTrue(metadata.exists())
+            self.assertTrue(unknown.exists())
+
+    def test_missing_authorized_metadata_fails_closed(self) -> None:
+        with self.fixture() as (repository, graph, metadata):
+            metadata.unlink()
+
+            with self.assertRaises(AUDITOR.AuditError):
+                AUDITOR.remove_mutable_maven_metadata(
+                    self.arguments(repository, graph)
+                )
+
+            self.assertTrue(
+                metadata.with_name("maven-metadata.xml.sha256").exists()
+            )
 
 
 def manifest_document(

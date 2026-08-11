@@ -25,6 +25,8 @@ readonly AUDITOR="${ROOT_DIR}/ci/casidp-supply-chain.py"
 readonly -a STRICT_DEPENDENCY_LOCKS=(
     "${ROOT_DIR}/gradle.lockfile"
     ':'
+    "${ROOT_DIR}/core/cas-server-core-web/gradle.lockfile"
+    ':core:cas-server-core-web'
     "${ROOT_DIR}/docs/cas-server-documentation-processor/gradle.lockfile"
     ':docs:cas-server-documentation-processor'
     "${ROOT_DIR}/webapp/cas-server-webapp/gradle.lockfile"
@@ -240,8 +242,8 @@ import stat
 import sys
 
 arguments = sys.argv[1:]
-if len(arguments) != 12 or len(arguments) % 2:
-    raise SystemExit("Unsafe strict dependency-lock boundary: expected exactly six locks")
+if len(arguments) != 14 or len(arguments) % 2:
+    raise SystemExit("Unsafe strict dependency-lock boundary: expected exactly seven locks")
 
 lock_specs = [
     (pathlib.Path(arguments[index]), arguments[index + 1])
@@ -249,6 +251,10 @@ lock_specs = [
 ]
 expected_specs = [
     (pathlib.Path("gradle.lockfile"), ":"),
+    (
+        pathlib.Path("core/cas-server-core-web/gradle.lockfile"),
+        ":core:cas-server-core-web",
+    ),
     (
         pathlib.Path("docs/cas-server-documentation-processor/gradle.lockfile"),
         ":docs:cas-server-documentation-processor",
@@ -376,6 +382,7 @@ for lockfile, project in lock_specs:
         )
     required_configurations = {
         ":": {"aggregateJavadocClasspath", "cyclonedxBom"},
+        ":core:cas-server-core-web": {"testRuntimeClasspath"},
     }.get(project, set())
     missing_configurations = required_configurations - configurations_seen
     if missing_configurations:
@@ -1569,6 +1576,7 @@ supply_chain_input_digest() {
     python3 - \
         gradle/verification-metadata.xml \
         gradle.lockfile \
+        core/cas-server-core-web/gradle.lockfile \
         docs/cas-server-documentation-processor/gradle.lockfile \
         webapp/cas-server-webapp/gradle.lockfile \
         webapp/cas-server-webapp-native/gradle.lockfile \
@@ -1655,6 +1663,7 @@ build_candidate() {
         :core:cas-server-core-services-authentication:testAuthentication \
         :core:cas-server-core-tickets-api:testTickets \
         :core:cas-server-core-web:testUtility \
+        :core:cas-server-core-web:testWeb \
         :core:cas-server-core-webflow-api:testWebflowActions \
         :core:cas-server-core-webflow:testWebflowAuthenticationActions \
         :core:cas-server-core-webflow:testWebflowServiceActions \
@@ -1668,6 +1677,7 @@ build_candidate() {
         --tests org.apereo.cas.web.support.CookieRetrievingCookieGeneratorTests \
         --tests org.apereo.cas.authentication.principal.DefaultResponseTests \
         --tests org.apereo.cas.ticket.registry.AbstractTicketRegistryIssuancePolicyTests \
+        --tests org.apereo.cas.config.CasCoreWebFinalResponsePolicyTests \
         --tests org.apereo.cas.web.support.WebUtilsTests \
         --tests org.apereo.cas.web.flow.actions.CasProtocolFinalResponseDeliveryBuilderTests \
         --tests org.apereo.cas.web.flow.actions.BrowserStorageActionTests \
@@ -1687,6 +1697,7 @@ build_candidate() {
         --result 'core/cas-server-core-cookie/build/test-results/testCookie/TEST-org.apereo.cas.web.support.CookieRetrievingCookieGeneratorTests.xml:14' \
         --result 'core/cas-server-core-services-authentication/build/test-results/testAuthentication/TEST-org.apereo.cas.authentication.principal.DefaultResponseTests.xml:3' \
         --result 'core/cas-server-core-tickets-api/build/test-results/testTickets/TEST-org.apereo.cas.ticket.registry.AbstractTicketRegistryIssuancePolicyTests.xml:17' \
+        --result 'core/cas-server-core-web/build/test-results/testWeb/TEST-org.apereo.cas.config.CasCoreWebFinalResponsePolicyTests.xml:2' \
         --result 'core/cas-server-core-web/build/test-results/testUtility/TEST-org.apereo.cas.web.support.WebUtilsTests.xml:6' \
         --result 'core/cas-server-core-webflow-api/build/test-results/testWebflowActions/TEST-org.apereo.cas.web.flow.actions.CasProtocolFinalResponseDeliveryBuilderTests.xml:20' \
         --result 'core/cas-server-core-webflow/build/test-results/testWebflowAuthenticationActions/TEST-org.apereo.cas.web.flow.actions.BrowserStorageActionTests.xml:9' \
@@ -1740,6 +1751,14 @@ publish_to_staging() {
         publishAllPublicationsToCasIdpForkRepository \
         --parallel
     verify_supply_chain_inputs_unchanged
+}
+
+remove_mutable_maven_metadata() {
+    python3 "${AUDITOR}" remove-mutable-maven-metadata \
+        --repository "${STAGING_REPOSITORY}" \
+        --task-graph "${TASK_GRAPH}" \
+        --group "${PROJECT_GROUP}" \
+        --version "${PROJECT_VERSION}"
 }
 
 audit_staging_repository() {
@@ -1991,6 +2010,7 @@ build_unsigned_candidate_once() {
     build_candidate
     normalize_resolved_sbom
     publish_to_staging
+    remove_mutable_maven_metadata
     audit_staging_repository "${ROOT_DIR}/build/reports/cyclonedx/bom.json" false
     verify_prepared_candidate
     require_repository_matches_manifest

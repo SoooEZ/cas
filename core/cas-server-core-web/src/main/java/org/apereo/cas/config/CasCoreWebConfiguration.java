@@ -8,7 +8,6 @@ import org.apereo.cas.configuration.CasConfigurationProperties;
 import org.apereo.cas.configuration.features.CasFeatureModule;
 import org.apereo.cas.multitenancy.TenantExtractor;
 import org.apereo.cas.multitenancy.UnknownTenantException;
-import org.apereo.cas.protocol.ProtocolFinalResponsePolicy;
 import org.apereo.cas.services.UnauthorizedServiceException;
 import org.apereo.cas.services.web.support.MappedExceptionErrorViewResolver;
 import org.apereo.cas.util.spring.RestActuatorControllerEndpoint;
@@ -68,15 +67,6 @@ import org.springframework.webflow.conversation.NoSuchConversationException;
 @ConditionalOnFeatureEnabled(feature = CasFeatureModule.FeatureCatalog.Core)
 @Configuration(value = "CasCoreWebConfiguration", proxyBeanMethods = false)
 class CasCoreWebConfiguration {
-
-    @Configuration(value = "CasCoreWebProtocolFinalResponsePolicyConfiguration", proxyBeanMethods = false)
-    static class CasCoreWebProtocolFinalResponsePolicyConfiguration {
-        @Bean(name = ProtocolFinalResponsePolicy.BEAN_NAME)
-        @ConditionalOnMissingBean(ProtocolFinalResponsePolicy.class)
-        public ProtocolFinalResponsePolicy protocolFinalResponsePolicy() {
-            return ProtocolFinalResponsePolicy.noOp();
-        }
-    }
 
     @Configuration(value = "CasCoreWebMessageSourceConfiguration", proxyBeanMethods = false)
     @EnableConfigurationProperties(CasConfigurationProperties.class)

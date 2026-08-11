@@ -1,8 +1,9 @@
 def casIdpReproducibleMode = providers.systemProperty('casIdpForkPublish')
     .map { value -> Boolean.parseBoolean(value) }
     .getOrElse(false) || gradle.startParameter.writeDependencyLocks
-def casIdpLockedWebJarGraph = casIdpReproducibleMode && project.path in [
+def casIdpLockedDependencyGraph = casIdpReproducibleMode && project.path in [
     ':',
+    ':core:cas-server-core-web',
     ':docs:cas-server-documentation-processor',
     ':webapp:cas-server-webapp',
     ':webapp:cas-server-webapp-native',
@@ -10,7 +11,7 @@ def casIdpLockedWebJarGraph = casIdpReproducibleMode && project.path in [
     ':webapp:cas-server-webapp-tomcat'
 ]
 
-if (casIdpLockedWebJarGraph) {
+if (casIdpLockedDependencyGraph) {
     dependencyLocking {
         lockAllConfigurations()
         lockMode = org.gradle.api.artifacts.dsl.LockMode.STRICT
@@ -42,7 +43,7 @@ configurations.configureEach {
         if (!providers.systemProperty('skipVersionConflict').present) {
             failOnVersionConflict()
         }
-        if (casIdpLockedWebJarGraph) {
+        if (casIdpLockedDependencyGraph) {
             activateDependencyLocking()
         } else if (casIdpReproducibleMode) {
             failOnNonReproducibleResolution()

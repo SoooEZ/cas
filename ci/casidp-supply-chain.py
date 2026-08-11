@@ -650,6 +650,100 @@ def validate_task_graph(graph: Any) -> list[dict[str, Any]]:
     return projects
 
 
+def remove_mutable_maven_metadata(args: argparse.Namespace) -> None:
+    """Remove only task-graph-authorized, mutable Maven version indexes.
+
+    Gradle writes an artifact-level ``maven-metadata.xml`` with a wall-clock
+    ``lastUpdated`` value.  That index is mutable across both reproducible
+    builds and later fork versions, so it cannot be part of the immutable,
+    create-only release manifest.  Exact-version publication bytes remain
+    untouched.
+    """
+    if args.group != EXPECTED_FORK_GROUP:
+        fail(f"Mutable metadata removal has an untrusted Maven group: {args.group}")
+    if not re.fullmatch(r"8\.0\.0-casidp\.[1-9][0-9]*", args.version):
+        fail(f"Mutable metadata removal has an invalid fork version: {args.version}")
+
+    repository_argument = Path(args.repository).absolute()
+    task_graph_argument = Path(args.task_graph).absolute()
+    if repository_argument.is_symlink():
+        fail(f"Staged Maven repository must not be a symbolic link: {repository_argument}")
+    if task_graph_argument.is_symlink():
+        fail(f"Publication task graph must not be a symbolic link: {task_graph_argument}")
+    repository = repository_argument.resolve()
+    task_graph_path = task_graph_argument.resolve()
+    if not repository.is_dir():
+        fail(f"Staged Maven repository does not exist: {repository}")
+
+    graph = load_json_strict(task_graph_path, "publication task graph JSON")
+    projects = validate_task_graph(graph)
+    artifacts = {project["artifactId"] for project in projects}
+    group_root = repository.joinpath(*args.group.split("."))
+    if group_root.is_symlink() or not group_root.is_dir():
+        fail(f"Staged repository has no safe group path for {args.group}")
+
+    metadata_names = {
+        "maven-metadata.xml",
+        *(f"maven-metadata.xml{suffix}" for suffix in CHECKSUM_SUFFIXES),
+    }
+    required_metadata = {
+        group_root / artifact / "maven-metadata.xml"
+        for artifact in artifacts
+    }
+    removable: set[Path] = set()
+    version_files_by_artifact: dict[str, int] = defaultdict(int)
+    for path in repository.rglob("*"):
+        if path.is_symlink():
+            fail(
+                "Symbolic links are forbidden in the staged repository; "
+                f"found {path.relative_to(repository)}"
+            )
+        if not path.is_file():
+            continue
+        try:
+            relative = path.relative_to(group_root)
+        except ValueError:
+            fail(
+                "Staged repository contains a foreign group/path: "
+                f"{path.relative_to(repository)}"
+            )
+        if len(relative.parts) >= 3:
+            artifact, version = relative.parts[:2]
+            if artifact in artifacts and version == args.version:
+                version_files_by_artifact[artifact] += 1
+                continue
+        if (
+            len(relative.parts) == 2
+            and relative.parts[0] in artifacts
+            and relative.parts[1] in metadata_names
+        ):
+            removable.add(path)
+            continue
+        fail(
+            "Staged repository contains an unexpected mutable or non-version file: "
+            f"{path.relative_to(repository)}"
+        )
+
+    missing_metadata = sorted(
+        path.relative_to(repository).as_posix()
+        for path in required_metadata - removable
+    )
+    missing_versions = sorted(artifacts - version_files_by_artifact.keys())
+    if missing_metadata or missing_versions:
+        fail(
+            "Staged repository is incomplete before mutable metadata removal: "
+            f"missingMetadata={missing_metadata[:20]}, "
+            f"missingVersionArtifacts={missing_versions[:20]}"
+        )
+
+    for path in sorted(removable):
+        path.unlink()
+    print(
+        f"Removed {len(removable)} generated mutable Maven metadata files "
+        f"for {len(artifacts)} exact-version artifacts"
+    )
+
+
 def audit_repository(args: argparse.Namespace) -> None:
     repository_argument = Path(args.repository).absolute()
     if repository_argument.is_symlink():
@@ -2803,6 +2897,13 @@ def parser() -> argparse.ArgumentParser:
     repository.add_argument("--resolved-sbom", required=True)
     repository.add_argument("--require-signatures", action="store_true")
     repository.set_defaults(handler=audit_repository)
+
+    mutable_metadata = subcommands.add_parser("remove-mutable-maven-metadata")
+    mutable_metadata.add_argument("--repository", required=True)
+    mutable_metadata.add_argument("--task-graph", required=True)
+    mutable_metadata.add_argument("--group", required=True)
+    mutable_metadata.add_argument("--version", required=True)
+    mutable_metadata.set_defaults(handler=remove_mutable_maven_metadata)
 
     candidate = subcommands.add_parser("verify-candidate")
     candidate.add_argument("--release-dir", required=True)
