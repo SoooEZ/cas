@@ -35,10 +35,10 @@ public class FetchTicketGrantingTicketAction extends BaseCasWebflowAction {
     }
 
     private void populateWebflowWithTicketFromCookie(final RequestContext requestContext, final String ticketId) {
-        LOGGER.debug("Attempting to locate ticket-granting ticket from cookie value [{}]", ticketId);
+        LOGGER.debug("Attempting to locate ticket-granting ticket from cookie value [REDACTED]");
         val ticket = FunctionUtils.doAndHandle(() -> ticketRegistry.getTicket(ticketId, TicketGrantingTicket.class), throwable -> null).get();
         if (ticket != null) {
-            LOGGER.debug("Found ticket-granting ticket [{}]", ticket.getId());
+            LOGGER.debug("Found ticket-granting ticket [REDACTED]");
             WebUtils.putTicketGrantingTicket(requestContext, ticket);
             WebUtils.putTicketGrantingTicketInScopes(requestContext, ticket);
             WebUtils.putAuthentication(ticket.getAuthentication(), requestContext);

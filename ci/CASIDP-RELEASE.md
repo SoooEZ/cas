@@ -23,40 +23,195 @@ the signed release tag. The tooling never creates, deletes, or pushes a tag.
 
 ## Repository setup
 
-Create a protected GitHub environment named `casidp-release`, require reviewer
-approval, and restrict deployment to protected tags matching
-`v8.0.0-casidp.*`. Configure these environment secrets:
+Create two protected GitHub environments named `casidp-release-sign` and
+`casidp-release-publish`. Require reviewer approval for each one and restrict
+both to protected tags matching `v8.0.0-casidp.*`.
+
+Configure only these secrets in `casidp-release-sign`:
 
 - `PGP_PRIVATE_KEY`: armored artifact/tag signing private key
 - `PGP_PASSPHRASE`: that key's passphrase
 - `CASIDP_SIGNING_FINGERPRINT`: full, uppercase primary-key fingerprint
 
+Keep those three values exclusively at the `casidp-release-sign` environment
+scope; do not duplicate them as repository, organization, or publication
+environment secrets.
+
+Do not configure any PGP secret in `casidp-release-publish`. Configure only the
+environment variable `CASIDP_TRUSTED_SIGNING_FINGERPRINT` there, with the same
+reviewed full, uppercase primary-key fingerprint. Keeping the public
+fingerprint in a protected environment variable, rather than reusing a signing
+secret, lets the publication job verify the archived public key and signatures
+without gaining access to the signing environment or its private material.
+
 Protect the release tag pattern against deletion or update. Keep GitHub Actions
-package permission at write only for the fork release environment. The workflow
-uses its short-lived `GITHUB_TOKEN`; it does not accept a repository URL or
-package token from workflow input.
+package permission disabled by default. The candidate job always runs first,
+explicitly receives only `contents: read`, does not enter either protected
+release environment, and receives neither PGP material nor a package token. It
+produces one tar archive containing exactly the staged Maven repository,
+aggregate checksums, release manifest, CycloneDX SBOM, audited publication
+graph, and publication-graph log. The job publishes the archive's SHA-256 as a
+job output and uploads the archive without rebuilding it.
+
+The protected signing and publication phases are separate jobs, protected
+environments, GitHub job tokens, and permission sets. The `sign` job has only
+`contents: read`, `id-token: write`, and `attestations: write`; it has no package
+permission and the workflow contains no package-token reference anywhere in
+that job. It downloads the unsigned candidate from the same run, verifies the
+candidate job's SHA-256 output, imports the PGP private key, verifies the release
+tag, signs the existing bytes, and records the provenance/SBOM/manifest
+attestations. It exports only the corresponding public key, adds that public key
+to signed `SHA256SUMS`, and uploads a complete signed-candidate tar whose name
+and digest are job outputs bound to the selected tag and `github.sha`.
+
+The later `publish` job depends only on `sign`. It has `contents: read`,
+`packages: write`, and only the OIDC/attestation permissions needed for the
+publication-completion attestation. It contains no private key, passphrase,
+signing command, JDK setup, or Gradle setup/invocation. After verifying the
+signed-candidate digest from `needs.sign`, it imports the candidate public key
+into a temporary keyring and requires its exact primary fingerprint to match
+`CASIDP_TRUSTED_SIGNING_FINGERPRINT`. Before any upload, it re-verifies the tag,
+every Maven signature, and the signatures for `SHA256SUMS`, manifest, SBOM,
+task graph, and task-graph log. Only its direct-upload step receives
+`GITHUB_ACTOR`, the short-lived `GITHUB_TOKEN`, and the trusted public-key
+fingerprint. The token is inherited through the environment rather than
+exposed in a Python command line. The release driver immediately removes the
+actor and token from its exported environment, performs every candidate and
+signature check without passing them to child processes, and restores them
+only in the direct uploader subprocess after all checks succeed.
+
+Neither protected job sets up or invokes a JDK or Gradle. The signing and
+publication jobs use `casidp-release-sign` and `casidp-release-publish`,
+respectively, so the publication job never enters an environment containing a
+private key or passphrase. GitHub issues separate job tokens, and the workflow
+boundary audit enforces the complete step allowlist, each job's exact
+permissions, and its exact environment reference. The two protected jobs may
+therefore require separate approvals.
+
+Real publications share one non-cancelling, repository-wide concurrency lock,
+so two fork versions cannot update GitHub Packages metadata concurrently. The
+workflow does not accept a repository URL or package token from workflow input.
+
+The candidate runner downloads the fixed Amazon Corretto
+`25.0.4.7.1` Linux x64 archive from its immutable resource URL, verifies the
+reviewed SHA-256 before installation, and registers it as JDK runtime version
+`25.0.4+7`. A floating major-version JDK selector is forbidden. Every Gradle
+invocation uses `--dependency-verification=strict`, fixes the upstream `CI`
+build mode, and disables Java toolchain auto-download. This makes local
+candidate checks and GitHub runners use the installed JDK instead of silently
+selecting the development-only JetBrains toolchain. The formal workflow
+supplies the checksum-pinned Corretto runtime above.
+`gradle/verification-metadata.xml` is therefore a reviewed release input; the
+workflow never generates or updates it.
+
+The documentation processor has an unavoidable WebJars graph whose upstream
+metadata uses semantic-version ranges. The root aggregate Javadoc/SBOM graph,
+the assembled CAS web application, its native-image variant, and the deployable
+Jetty and Tomcat WAR variants all consume those ranges. In fork release mode,
+exactly the root project,
+`:docs:cas-server-documentation-processor`, `:webapp:cas-server-webapp`, and
+`:webapp:cas-server-webapp-native`, `:webapp:cas-server-webapp-jetty`, and
+`:webapp:cas-server-webapp-tomcat` therefore activate Gradle STRICT dependency
+locking; every other fork project continues to use
+`failOnNonReproducibleResolution()`. Their reviewed lockfiles are required
+release inputs:
+
+- `gradle.lockfile`
+- `docs/cas-server-documentation-processor/gradle.lockfile`
+- `webapp/cas-server-webapp/gradle.lockfile`
+- `webapp/cas-server-webapp-native/gradle.lockfile`
+- `webapp/cas-server-webapp-jetty/gradle.lockfile`
+- `webapp/cas-server-webapp-tomcat/gradle.lockfile`
+
+The release driver audits exactly those six paths and rejects a missing,
+non-regular, or symbolic-link lockfile; non-UTF-8 or non-LF bytes; a missing
+final newline; non-canonical Gradle headers or `empty=` footers; duplicate GAVs
+or configurations; empty versions; snapshots; and dynamic/range selectors. It
+also fails if the formal workflow or release driver contains any full or
+selective dependency-lock update or dependency-verification metadata/key
+generation flag.
+
+Lock updates belong in a separate dependency review, never in a candidate job.
+The `--write-locks` bootstrap selects the same reproducible dependency and
+plugin graph as `-DcasIdpForkPublish=true`, while publication repositories,
+credentials, and signing remain controlled only by that explicit system
+property. Gradle writes an incidental, settings-scoped
+`settings-gradle.lockfile`; it is outside the reviewed six-graph boundary
+and must not be committed. The canonical update helper removes it after each
+pass, resolves all six graphs together plus the root CycloneDX plugin's
+plugin-only `cyclonedxBom` configuration with strict dependency verification,
+disables build/configuration caches and Java toolchain auto-download, then
+generates the locks a second time and requires byte-identical output. Before
+Gradle starts it rejects any pre-existing lock that is not a regular in-tree
+file. It also snapshots dependency verification metadata and fails after either
+pass if those reviewed bytes changed. Run only:
+
+```bash
+./ci/casidp-update-locks.sh
+```
+
+The fourth comment line in each generated lockfile is Gradle's project-specific
+shorthand. It is retained as the canonical generated-file header for auditing,
+but maintainers must use the helper above so all six lock states are updated
+and compared as one reviewed change, including the plugin-only SBOM
+configuration in the root lock. The helper resolves that configuration directly;
+it does not generate 426 module BOMs, which remains the formal candidate
+build's responsibility. The helper rejects any dependency verification metadata
+mutation; add missing checksums separately after verifying the dependency and
+repository identity.
+
+The CycloneDX plugin's wall-clock metadata timestamp is normalized to the
+pinned source commit epoch before audit so the two SBOM byte streams are
+reproducible; all resolved components and dependency edges remain the plugin's
+output.
 
 ## Release procedure
 
-1. Commit and review all fork changes. Run the upstream test matrix appropriate
-   to every touched registry/protocol module before proposing the tag; the
-   release gate below is deliberately narrower than the complete upstream CAS
-   matrix.
+1. Commit and review all fork changes. Run any environment-specific upstream
+   integration matrix required by the touched modules before proposing the tag.
+   The release gate runs the repository's complete default `build` lifecycle
+   and then runs the exact security suites in a separate filtered invocation;
+   it does not claim to exercise every optional external-service integration.
 2. Create and push the signed annotated tag manually. Its name must exactly be
    `v<gradle.properties version>`.
-3. Run **CAS-IDP Fork Release** with that tag and `dry_run: true`. This compiles
-   the release candidate, runs the pinned issuance-policy, protocol-boundary,
-   Webflow, and Redis regression suites, stages every Gradle publication in a
-   local Maven repository, and audits it without publishing packages or
-   attestations. It must not be described as proof that the complete upstream
-   CAS test matrix passed.
-4. Review the task graph, CycloneDX SBOM, release manifest, PGP signatures, and
-   `SHA256SUMS` attached to the workflow run.
-5. Re-run the same workflow/tag with `dry_run: false` and approve the protected
-   environment. The job prepares the same signed candidate, checks that no POM
-   for the version exists remotely, records provenance/SBOM/manifest
-   attestations, publishes all modules to GitHub Packages, then downloads and
-   SHA-256-verifies every published file.
+3. In **CAS-IDP Fork Release**, select the signed tag itself in GitHub's **Use
+   workflow from** selector, enter the exact same tag in `release_tag`, and use
+   `dry_run: true`. A branch-selected dispatch or a mismatched input is rejected
+   before checkout. The secretless candidate job checks out the immutable
+   `github.sha`, proves that it is exactly the selected annotated tag and that
+   the tag object contains an OpenPGP signature block,
+   compiles the release candidate, runs the full default Gradle build, then
+   separately runs the pinned issuance-policy, protocol-boundary, Webflow, and
+   Redis regression suites, stages every Gradle
+   publication in a local Maven repository, and audits it unsigned. It then
+   deletes the complete Gradle user home and release staging directory, repeats
+   the entire candidate build with a second fresh Gradle home, and fails unless
+   the staged repository, CycloneDX SBOM, release manifest, aggregate checksums,
+   and audited publication graph are byte-identical. Because the candidate job
+   deliberately has no signing key, cryptographic verification of the tag
+   signer occurs later inside the protected signing step. This gate must not be
+   described as proof that optional upstream integration matrices passed.
+4. Download the unsigned candidate tar, verify the SHA-256 printed in the job
+   summary/log, and review its task graph, CycloneDX SBOM, release manifest, and
+   `SHA256SUMS`. The complete archive is retained for 14 days.
+5. Re-run from the same selected workflow tag with the identical `release_tag`
+   and `dry_run: false`, then approve the protected signing job. The workflow
+   still runs the same secretless candidate job first. The signing job downloads
+   that exact unsigned archive and checks its digest, cryptographically verifies
+   the release tag with the approved key, signs each already-staged POM, Gradle
+   module, JAR, and WAR, regenerates and validates the signed manifest and
+   checksums, exports the matching public key, records the release attestations,
+   and uploads one digest-bound signed-candidate archive. This job has no package
+   permission or publication token and runs no Gradle command.
+6. Approve the separate protected publication job if required. It downloads only
+   the signed artifact named by `needs.sign`, verifies its exact digest and
+   trusted public-key fingerprint, and re-verifies the tag and every release
+   signature. The standard-library direct uploader then checks that the version
+   is unused, uploads only the exact files named by the signed manifest, and
+   downloads and SHA-256-verifies every remote file. It never rebuilds or signs
+   the candidate. A successful read-back creates the publication-completion
+   predicate, which is attested in the final step. Review both protected jobs'
+   evidence and the completion attestation.
 
 GitHub Packages publication is multi-module and is not transactional. If any
 remote upload or read-back check fails, the version is permanently burned: do
@@ -64,6 +219,14 @@ not retry or overwrite it. Diagnose the cause, increment `casidp.N`, create a
 new signed tag, and release that new version. A consumer must treat the custom
 `casidp-publication/v1` completion attestation as the gate that proves the full
 manifest was successfully read back.
+
+The raw conditional-PUT behavior of GitHub Packages remains an external
+production gate: before the first real release, run the direct uploader's live
+contract suite against a dedicated, isolated, disposable package repository and
+prove absent upload, identical replay, conflict rejection, redirect handling,
+and complete read-back. Unit tests and mocked HTTP responses do not establish
+that service-level contract, and the live test must never target the production
+coordinates.
 
 The audited graph requires exactly one Maven publication per publishable Gradle
 project. It includes the BOM, normal JARs, deployable WARs, every POM, and Gradle
@@ -76,6 +239,19 @@ Each required JUnit XML suite is also bound to an exact reviewed test count.
 Missing suites, added or removed tests, skips, failures, and errors all stop the
 release. An intentional suite change therefore requires an explicit review and
 count update in `ci/casidp-release.sh`.
+
+Dependency verification failures are never repaired in the release workflow.
+Resolve them in a separate review: confirm the dependency and repository
+identity, update `gradle/verification-metadata.xml` intentionally, review the
+exact added checksums/signing keys, and repeat the candidate gate from a clean
+tag. Treat any strict dependency-lock failure the same way: update the
+affected lockfile only in the separate review described above. Do not weaken
+strict mode, generate locks in CI, or enable automatic toolchain downloads.
+The driver rejects full or selective lock updates and dependency-verification
+metadata/key generation. It also hashes all six lockfiles plus
+`gradle/verification-metadata.xml` before the first Gradle invocation and
+requires the same combined byte identity after every build, task-graph, and
+publication invocation.
 
 ## Compatibility boundary
 
@@ -116,8 +292,21 @@ For a full unsigned local candidate (still no remote writes):
   --allow-dirty --skip-tag-verification --unsigned
 ```
 
+`--sign-existing` is intentionally not a build command. It accepts only a
+previously extracted unsigned candidate, refuses `GITHUB_TOKEN`, signs the
+existing staged publication files, rebuilds the manifest/checksum evidence, and
+strictly verifies every signature against `CASIDP_SIGNING_FINGERPRINT`.
+`--publish` accepts only that signed candidate, refuses all PGP inputs, never
+calls Gradle or signs anything, and requires
+`CASIDP_TRUSTED_SIGNING_FINGERPRINT`. It imports the archived public key into a
+temporary verification-only keyring, re-verifies the tag and every detached
+signature, and only then invokes `publish-remote` with the manifest, release
+directory, and fixed GitHub Packages URL. The uploader reads `GITHUB_ACTOR` and
+`GITHUB_TOKEN` only from its own subprocess environment; verification children
+do not inherit either value.
+
 `--allow-dirty`, `--skip-tag-verification`, and `--unsigned` are rejected by
-`--prepare` and `--publish`.
+`--sign-existing` and `--publish`.
 
 After release, verify the aggregate checksum subject and its attestations with
 GitHub CLI, then compare package files to the hashes embedded in the attested

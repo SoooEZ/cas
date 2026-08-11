@@ -5,16 +5,19 @@ import org.apereo.cas.configuration.support.TriStateBoolean;
 import org.apereo.cas.monitor.Monitorable;
 import org.apereo.cas.protocol.ProtocolFinalResponseCapability;
 import org.apereo.cas.protocol.ProtocolFinalResponseContext;
+import org.apereo.cas.protocol.ProtocolFinalResponsePreparedDelivery;
 import org.apereo.cas.support.events.sso.CasSingleSignOnSessionCreatedEvent;
 import org.apereo.cas.ticket.TicketGrantingTicket;
 import org.apereo.cas.ticket.registry.TicketIssuanceMetadata;
-import org.apereo.cas.ticket.registry.TicketRegistry;
 import org.apereo.cas.ticket.registry.TicketIssuanceReadContext;
+import org.apereo.cas.ticket.registry.TicketRegistry;
 import org.apereo.cas.web.cookie.CasCookieBuilder;
+import org.apereo.cas.web.cookie.CookieValueManager;
 import org.apereo.cas.web.flow.CasWebflowConstants;
 import org.apereo.cas.web.flow.SingleSignOnParticipationRequest;
 import org.apereo.cas.web.flow.SingleSignOnParticipationStrategy;
 import org.apereo.cas.web.flow.actions.BaseCasWebflowAction;
+import org.apereo.cas.web.flow.actions.CasProtocolFinalResponseDeliveryBuilder;
 import org.apereo.cas.web.support.ProtocolFinalResponsePolicyEnforcer;
 import org.apereo.cas.web.support.WebUtils;
 import org.apereo.cas.web.support.gen.CookieRetrievingCookieGenerator;
@@ -25,6 +28,7 @@ import lombok.val;
 import org.apache.commons.lang3.StringUtils;
 import org.apereo.inspektr.common.web.ClientInfoHolder;
 import org.jspecify.annotations.Nullable;
+import org.springframework.context.ApplicationContext;
 import org.springframework.webflow.core.collection.LocalAttributeMap;
 import org.springframework.webflow.execution.Event;
 import org.springframework.webflow.execution.RequestContext;
@@ -68,7 +72,7 @@ public class SendTicketGrantingTicketAction extends BaseCasWebflowAction {
         } else if (singleSignOnParticipationStrategy.supports(ssoRequest)) {
             val createCookie = shouldCreateSingleSignOnCookie(ssoRequest, ticketGrantingTicketId);
             if (createCookie) {
-                LOGGER.debug("Setting ticket-granting cookie for current session linked to [{}].", ticketGrantingTicketId);
+                LOGGER.debug("Setting ticket-granting cookie for current session linked to [REDACTED].");
                 finalEvent = createSingleSignOnCookie(context, ticketGrantingTicketId);
             } else {
                 LOGGER.info("Authentication session is renewed but CAS is not configured to create the SSO session. "
@@ -117,25 +121,105 @@ public class SendTicketGrantingTicketAction extends BaseCasWebflowAction {
             .orElseGet(() -> ProtocolFinalResponseCapability.of(
                 ProtocolFinalResponseCapability.Type.CAS_TICKET_GRANTING_TICKET,
                 ticketGrantingTicketId));
-        val policyContext = ProtocolFinalResponseContext.of(
+        val stateless = ticketGrantingTicket.isStateless();
+        val rememberMeAuthentication = stateless
+            ? Boolean.FALSE
+            : CookieRetrievingCookieGenerator.isRememberMeAuthentication(
+                requestContext);
+        val storageType = stateless
+            ? CasProtocolFinalResponseDeliveryBuilder
+                .browserStorageType(requestContext)
+            : null;
+        val request = WebUtils
+            .getHttpServletRequestFromExternalWebflowContext(requestContext);
+        val response = WebUtils
+            .getHttpServletResponseFromExternalWebflowContext(requestContext);
+        val applicationContext = requestContext.getActiveFlow()
+            .getApplicationContext();
+        if (!ProtocolFinalResponsePolicyEnforcer.isPolicyConfigured(
+            applicationContext)) {
+            if (stateless) {
+                return result(
+                    CasWebflowConstants.TRANSITION_ID_WRITE_BROWSER_STORAGE,
+                    new LocalAttributeMap<>(
+                        TicketGrantingTicket.class.getName(),
+                        ticketGrantingTicketId));
+            }
+            ticketGrantingCookieBuilder.addCookie(
+                request,
+                response,
+                rememberMeAuthentication,
+                ticketGrantingTicketId);
+            publishSingleSignOnSessionCreatedEvent(
+                applicationContext, ticketGrantingTicket);
+            return success();
+        }
+        if (!stateless
+            && !ticketGrantingCookieBuilder
+                .supportsPreparedFinalResponse()) {
+            throw new IllegalStateException(
+                "The configured ticket-granting cookie builder does not support authoritative prepared final responses");
+        }
+        final CookieValueManager.PreparedCookieValue preparedCookieValue;
+        final CasCookieBuilder.PreparedCookie preparedCookie;
+        if (stateless) {
+            preparedCookieValue = ticketGrantingCookieBuilder
+                .getCasCookieValueManager()
+                .prepareCookieValue(ticketGrantingTicketId, request);
+            preparedCookie = null;
+        } else {
+            preparedCookieValue = null;
+            preparedCookie = ticketGrantingCookieBuilder.prepareCookie(
+                request,
+                response,
+                rememberMeAuthentication,
+                ticketGrantingTicketId);
+        }
+        val logicalContext = ProtocolFinalResponseContext.of(
             ProtocolFinalResponseContext.Protocol.CAS,
             ProtocolFinalResponseContext.ResponseType.CAS_BROWSER_SSO_SESSION,
             null, subjectId, capability);
-        ProtocolFinalResponsePolicyEnforcer.enforce(
-            requestContext.getActiveFlow().getApplicationContext(), policyContext);
-        if (ticketGrantingTicket.isStateless()) {
+        val logicalResponseBinding = logicalContext
+            .logicalResponseBinding();
+        val preparedDelivery = stateless
+            ? CasProtocolFinalResponseDeliveryBuilder
+                .prepareStatelessBrowserStorage(
+                    ticketGrantingCookieBuilder,
+                    preparedCookieValue,
+                    storageType,
+                    CasProtocolFinalResponseDeliveryBuilder
+                        .DEFAULT_BROWSER_STORAGE_CONTEXT,
+                    logicalResponseBinding)
+            : CasProtocolFinalResponseDeliveryBuilder.prepareHttpCookie(
+                preparedCookie, logicalResponseBinding);
+        val policyContext = logicalContext.withPreparedDelivery(
+            preparedDelivery);
+        val authorization = ProtocolFinalResponsePolicyEnforcer.authorize(
+            applicationContext, policyContext);
+        val authorizedDelivery = authorization.preparedDelivery();
+        if (stateless) {
+            val eventAttributes = new LocalAttributeMap<>();
+            eventAttributes.put(
+                TicketGrantingTicket.class.getName(), ticketGrantingTicketId);
+            eventAttributes.put(
+                ProtocolFinalResponsePreparedDelivery.class.getName(),
+                authorizedDelivery);
             return result(CasWebflowConstants.TRANSITION_ID_WRITE_BROWSER_STORAGE,
-                new LocalAttributeMap<>(TicketGrantingTicket.class.getName(), ticketGrantingTicketId));
+                eventAttributes);
         }
-        val request = WebUtils.getHttpServletRequestFromExternalWebflowContext(requestContext);
-        val response = WebUtils.getHttpServletResponseFromExternalWebflowContext(requestContext);
-        val rememberMeAuthentication = CookieRetrievingCookieGenerator.isRememberMeAuthentication(requestContext);
-        ticketGrantingCookieBuilder.addCookie(request, response, rememberMeAuthentication, ticketGrantingTicketId);
+        ticketGrantingCookieBuilder.addCookie(
+            response,
+            CasProtocolFinalResponseDeliveryBuilder.decodeHttpCookie(
+                authorizedDelivery));
+        publishSingleSignOnSessionCreatedEvent(
+            applicationContext, ticketGrantingTicket);
+        return success();
+    }
 
-        val applicationContext = requestContext.getActiveFlow().getApplicationContext();
+    private void publishSingleSignOnSessionCreatedEvent(
+        final ApplicationContext applicationContext,
+        final TicketGrantingTicket ticketGrantingTicket) {
         val clientInfo = ClientInfoHolder.getClientInfo();
         applicationContext.publishEvent(new CasSingleSignOnSessionCreatedEvent(this, ticketGrantingTicket, clientInfo));
-
-        return success();
     }
 }

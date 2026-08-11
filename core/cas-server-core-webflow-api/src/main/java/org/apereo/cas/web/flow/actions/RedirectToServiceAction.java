@@ -42,9 +42,18 @@ public class RedirectToServiceAction extends BaseCasWebflowAction {
         val builder = responseBuilderLocator.locate(service);
         LOGGER.debug("Located service response builder [{}] for [{}]", builder, service);
 
-        val response = builder.build(service, serviceTicketId, auth);
+        val builtResponse = builder.build(service, serviceTicketId, auth);
+        var response = builtResponse;
 
         if (StringUtils.isNotBlank(serviceTicketId)) {
+            val applicationContext = requestContext.getActiveFlow()
+                .getApplicationContext();
+            if (!ProtocolFinalResponsePolicyEnforcer.isPolicyConfigured(
+                applicationContext)) {
+                LOGGER.debug("No authoritative final-response policy is configured; retaining the upstream service response path");
+                return finalizeResponseEvent(
+                    requestContext, service, response);
+            }
             val issuanceMetadata = WebUtils.getServiceTicketIssuanceMetadata(requestContext);
             val subjectId = issuanceMetadata
                 .map(metadata -> metadata.subjectId())
@@ -59,14 +68,22 @@ public class RedirectToServiceAction extends BaseCasWebflowAction {
                 .orElseGet(() -> ProtocolFinalResponseCapability.of(
                     ProtocolFinalResponseCapability.Type.CAS_SERVICE_TICKET,
                     serviceTicketId));
-            val policyContext = ProtocolFinalResponseContext.of(
+            val logicalContext = ProtocolFinalResponseContext.of(
                 ProtocolFinalResponseContext.Protocol.CAS,
                 ProtocolFinalResponseContext.ResponseType.CAS_SERVICE_RESPONSE,
                 service != null ? service.getId() : null,
                 subjectId,
                 capability);
-            ProtocolFinalResponsePolicyEnforcer.enforce(
-                requestContext.getActiveFlow().getApplicationContext(), policyContext);
+            val preparedResponse = CasProtocolFinalResponseDeliveryBuilder
+                .prepareServiceResponse(
+                    response,
+                    logicalContext.logicalResponseBinding());
+            val policyContext = logicalContext.withPreparedDelivery(
+                preparedResponse);
+            val authorization = ProtocolFinalResponsePolicyEnforcer.authorize(
+                applicationContext, policyContext);
+            response = CasProtocolFinalResponseDeliveryBuilder
+                .decodeServiceResponse(authorization.preparedDelivery());
         }
         LOGGER.debug("Built response of type [{}] for [{}]",
             response != null ? response.responseType() : null, service);
@@ -85,5 +102,53 @@ public class RedirectToServiceAction extends BaseCasWebflowAction {
         val eventId = response.responseType().name().toLowerCase(Locale.ENGLISH);
         LOGGER.debug("Signaling flow to redirect to service [{}] via event [{}]", service, eventId);
         return eventId;
+    }
+
+    /**
+     * Immutable snapshot of the exact service response committed by policy.
+     * Raw response fields remain available to the renderer but are redacted
+     * from diagnostics.
+     *
+     * @author SoooEZ
+     * @param responseType exact delivery type
+     * @param url exact final target URL
+     * @param attributes exact response attributes
+     * @since 8.0.0
+     */
+    public record ImmutableFinalResponse(
+        Response.ResponseType responseType,
+        String url,
+        Map<String, String> attributes) implements Response {
+
+        @Serial
+        private static final long serialVersionUID = 4670938835790091330L;
+
+        public ImmutableFinalResponse {
+            Objects.requireNonNull(responseType, "responseType");
+            Objects.requireNonNull(url, "url");
+            val source = Objects.requireNonNull(attributes, "attributes");
+            val emittedAttributes = new LinkedHashMap<String, String>();
+            source.forEach((name, value) -> {
+                if (responseType == Response.ResponseType.REDIRECT
+                    && value == null) {
+                    return;
+                }
+                val attributeName = Objects.requireNonNull(
+                    name, "response attribute name");
+                emittedAttributes.put(attributeName, value);
+            });
+            attributes = emittedAttributes;
+        }
+
+        @Override
+        public Map<String, String> attributes() {
+            return new LinkedHashMap<>(attributes);
+        }
+
+        @Override
+        public String toString() {
+            return "ImmutableFinalResponse[responseType=%s, response=[REDACTED]]"
+                .formatted(responseType);
+        }
     }
 }

@@ -5,10 +5,10 @@ import org.apereo.cas.util.serialization.JacksonObjectMapperFactory;
 import org.apereo.cas.web.BrowserStorage;
 import org.apereo.cas.web.cookie.CasCookieBuilder;
 import org.apereo.cas.web.flow.actions.BaseCasWebflowAction;
+import org.apereo.cas.web.flow.actions.CasProtocolFinalResponseDeliveryBuilder;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
-import lombok.val;
 import org.springframework.webflow.execution.RequestContext;
 import tools.jackson.databind.ObjectMapper;
 
@@ -27,14 +27,12 @@ public abstract class BaseBrowserStorageAction extends BaseCasWebflowAction {
 
     protected final CasCookieBuilder ticketGrantingCookieBuilder;
 
-    protected String browserStorageContextKey = "CasBrowserStorageContext";
+    protected String browserStorageContextKey =
+        CasProtocolFinalResponseDeliveryBuilder
+            .DEFAULT_BROWSER_STORAGE_CONTEXT;
 
     protected BrowserStorage.BrowserStorageTypes determineStorageType(final RequestContext requestContext) {
-        val requestScope = requestContext.getRequestScope();
-        if (requestScope.contains(BrowserStorage.BrowserStorageTypes.class.getSimpleName())) {
-            val requiredType = requestScope.getRequiredString(BrowserStorage.BrowserStorageTypes.class.getSimpleName());
-            return BrowserStorage.BrowserStorageTypes.valueOf(requiredType.toUpperCase(Locale.ENGLISH));
-        }
-        return BrowserStorage.BrowserStorageTypes.LOCAL;
+        return CasProtocolFinalResponseDeliveryBuilder
+            .browserStorageType(requestContext);
     }
 }

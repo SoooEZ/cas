@@ -267,6 +267,13 @@ tasks.named('jar') {
 
 if (!providers.systemProperty('skipCheckstyle').present && CasProjectConventions.shouldBePublished(project)) {
     project.pluginManager.apply('checkstyle')
+    def generatedSourcesPath = layout.buildDirectory
+        .dir('generated')
+        .get()
+        .asFile
+        .toPath()
+        .toAbsolutePath()
+        .normalize()
     checkstyle {
         configProperties = [
                 'checkstyle.suppressions.file' : new File(rootDir, 'style/checkstyle-suppressions.xml'),
@@ -276,6 +283,11 @@ if (!providers.systemProperty('skipCheckstyle').present && CasProjectConventions
         ignoreFailures = false
         showViolations = true
         toolVersion = "${libs.versions.checkstyle.get()}"
+    }
+    tasks.withType(org.gradle.api.plugins.quality.Checkstyle).configureEach {
+        exclude { element ->
+            element.file.toPath().toAbsolutePath().normalize().startsWith(generatedSourcesPath)
+        }
     }
 }
 

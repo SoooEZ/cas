@@ -1,3 +1,22 @@
+def casIdpReproducibleMode = providers.systemProperty('casIdpForkPublish')
+    .map { value -> Boolean.parseBoolean(value) }
+    .getOrElse(false) || gradle.startParameter.writeDependencyLocks
+def casIdpLockedWebJarGraph = casIdpReproducibleMode && project.path in [
+    ':',
+    ':docs:cas-server-documentation-processor',
+    ':webapp:cas-server-webapp',
+    ':webapp:cas-server-webapp-native',
+    ':webapp:cas-server-webapp-jetty',
+    ':webapp:cas-server-webapp-tomcat'
+]
+
+if (casIdpLockedWebJarGraph) {
+    dependencyLocking {
+        lockAllConfigurations()
+        lockMode = org.gradle.api.artifacts.dsl.LockMode.STRICT
+    }
+}
+
 configurations.configureEach {
     resolutionStrategy {
         dependencySubstitution {
@@ -22,6 +41,11 @@ configurations.configureEach {
 
         if (!providers.systemProperty('skipVersionConflict').present) {
             failOnVersionConflict()
+        }
+        if (casIdpLockedWebJarGraph) {
+            activateDependencyLocking()
+        } else if (casIdpReproducibleMode) {
+            failOnNonReproducibleResolution()
         }
         preferProjectModules()
 
@@ -228,4 +252,3 @@ configurations.configureEach {
     exclude(group: 'io.netty', module: 'netty-transport-native-kqueue')
     exclude(group: 'org.springframework', module: 'spring-jcl')
 }
-

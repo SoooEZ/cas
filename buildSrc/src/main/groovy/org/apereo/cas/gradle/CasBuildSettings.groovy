@@ -57,8 +57,12 @@ final class CasBuildSettings {
             .getOrElse(false)
     }
 
+    static boolean isCasIdpReproducibleMode(final Project project) {
+        isCasIdpForkPublish(project) || project.gradle.startParameter.writeDependencyLocks
+    }
+
     static boolean isArtifactReleaseBuild(final Project project) {
-        isPublishFlag(project) || isCasIdpForkPublish(project)
+        isPublishFlag(project) || isCasIdpReproducibleMode(project)
     }
 
     static boolean isPublishMinimalArtifacts(final Project project) {
@@ -155,6 +159,7 @@ final class CasBuildSettings {
         project.ext.set('publishReleases', isPublishReleases(project))
         project.ext.set('publishFlag', isPublishFlag(project))
         project.ext.set('casIdpForkPublish', isCasIdpForkPublish(project))
+        project.ext.set('casIdpReproducibleMode', isCasIdpReproducibleMode(project))
         project.ext.set('artifactReleaseBuild', isArtifactReleaseBuild(project))
         project.ext.set('publishMinimalArtifacts', isPublishMinimalArtifacts(project))
         project.ext.set('skipBootifulArtifact', isSkipBootifulArtifact(project))
@@ -318,6 +323,5 @@ final class CasBuildSettings {
         project.gradle.startParameter.taskNames.any { it == taskName || it.endsWith(":${taskName}") }
     }
 }
-
 
 

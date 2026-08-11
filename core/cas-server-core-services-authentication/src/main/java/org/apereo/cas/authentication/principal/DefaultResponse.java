@@ -59,7 +59,7 @@ public record DefaultResponse(ResponseType responseType, String url, Map<String,
     public static Response getRedirectResponse(final String url, final Map<String, String> parameters) {
         val builder = new StringBuilder(parameters.size() * RESPONSE_INITIAL_CAPACITY);
         val sanitizedUrl = sanitizeUrl(url);
-        LOGGER.trace("Sanitized URL for redirect response is [{}]", sanitizedUrl);
+        LOGGER.trace("Sanitized URL for redirect response is [REDACTED]");
         val fragmentSplit = Splitter.on("#").splitToList(sanitizedUrl);
         builder.append(fragmentSplit.getFirst());
         val params = parameters.entrySet()
@@ -77,7 +77,7 @@ public record DefaultResponse(ResponseType responseType, String url, Map<String,
             builder.append(fragmentSplit.get(1));
         }
         val urlRedirect = builder.toString();
-        LOGGER.debug("Final redirect response is [{}]", urlRedirect);
+        LOGGER.debug("Final redirect response is [REDACTED]");
         return new DefaultResponse(ResponseType.REDIRECT, urlRedirect, parameters);
     }
 
@@ -100,7 +100,7 @@ public record DefaultResponse(ResponseType responseType, String url, Map<String,
         }
         m.appendTail(sb);
         if (hasNonPrintable) {
-            LOGGER.warn("The following redirect URL has been sanitized and may be sign of attack:\n[{}]", url);
+            LOGGER.warn("A redirect URL was sanitized because it contained non-printable characters");
         }
         return sb.toString();
     }

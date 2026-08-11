@@ -186,6 +186,10 @@ ext.libraries = [
                 exclude(group: "org.slf4j", module: "slf4j-api")
                 exclude(group: "org.apache.logging.log4j", module: "log4j-core")
                 exclude(group: "org.jetbrains", module: "annotations")
+                exclude(group: "net.minidev", module: "json-smart")
+            },
+            dependencies.create(libs.json.smart.get()) {
+                exclude(group: "org.ow2.asm", module: "asm")
             }
         ],
         elasticapmagent : [

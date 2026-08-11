@@ -10,6 +10,9 @@ plugins {
 ext.isCiServer = System.getenv().containsKey("CI")
 ext.githubPackageRegistryUser = System.getenv("GH_PACKAGE_REGISTRY_USER")
 ext.githubPackageRegistryPassword = System.getenv("GH_PACKAGE_REGISTRY_TOKEN")
+ext.casIdpReproducibleMode = providers.systemProperty("casIdpForkPublish")
+    .map(String::toBoolean)
+    .getOrElse(false) || gradle.startParameter.writeDependencyLocks
 
 
 buildCache {
@@ -67,13 +70,15 @@ dependencyResolutionManagement {
                 includeGroupByRegex "net\\.shibboleth.*"
             }
         }
-        maven {
-            url = "https://central.sonatype.com/repository/maven-snapshots"
-            mavenContent { snapshotsOnly() }
-        }
-        maven {
-            url = "https://repository.apache.org/content/repositories/snapshots"
-            mavenContent { snapshotsOnly() }
+        if (!casIdpReproducibleMode) {
+            maven {
+                url = "https://central.sonatype.com/repository/maven-snapshots"
+                mavenContent { snapshotsOnly() }
+            }
+            maven {
+                url = "https://repository.apache.org/content/repositories/snapshots"
+                mavenContent { snapshotsOnly() }
+            }
         }
         maven {
             url = "https://repository.apache.org/content/repositories/releases"

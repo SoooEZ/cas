@@ -8,13 +8,13 @@ import org.junit.jupiter.api.function.Executable;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests for exact final-response bundles and fenced commit contracts.
+ * Tests for exact final-response bundles and typed commit failures.
  *
  * @author SoooEZ
  * @since 8.0.0
  */
 @Tag("CAS")
-class ProtocolFinalResponseCommitPolicyTests {
+class ProtocolFinalResponseBundleTests {
 
     private static final String BUNDLE_ID =
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -28,12 +28,6 @@ class ProtocolFinalResponseCommitPolicyTests {
 
     private static final String SECOND_INTENT_ID =
         "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
-
-    private static final String LEASE_ID =
-        "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-
-    private static final String OWNER_TOKEN =
-        "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
     private static final long GENERATION = 7;
 
@@ -73,6 +67,155 @@ class ProtocolFinalResponseCommitPolicyTests {
         assertNotEquals(
             bundle.manifestIdentity(),
             bundle(changedCapability).manifestIdentity());
+    }
+
+    @Test
+    void verifyDeliveryRepresentationIsCanonicalBoundedAndRedacted() {
+        val firstAttributes = new LinkedHashMap<String, String>();
+        firstAttributes.put("ticket", "ST-capability-secret");
+        firstAttributes.put("method", "redirect");
+        val reversedAttributes = new LinkedHashMap<String, String>();
+        reversedAttributes.put("method", "redirect");
+        reversedAttributes.put("ticket", "ST-capability-secret");
+
+        val first = ProtocolFinalResponseDelivery.canonical(
+            ProtocolFinalResponseDelivery.Mode.REDIRECT,
+            "https://service.example.org?ticket=ST-capability-secret",
+            firstAttributes);
+        val reordered = ProtocolFinalResponseDelivery.canonical(
+            ProtocolFinalResponseDelivery.Mode.REDIRECT,
+            "https://service.example.org?ticket=ST-capability-secret",
+            reversedAttributes);
+        val changedMode = ProtocolFinalResponseDelivery.canonical(
+            ProtocolFinalResponseDelivery.Mode.POST,
+            "https://service.example.org?ticket=ST-capability-secret",
+            reversedAttributes);
+
+        assertEquals(first, reordered);
+        assertNotEquals(first, changedMode);
+        assertEquals(
+            ProtocolFinalResponseBundle.SHA_256_HEX_LENGTH,
+            first.canonicalRepresentationDigest().length());
+        assertFalse(first.toString().contains("ST-capability-secret"));
+        assertFalse(first.toString().contains(
+            first.canonicalRepresentationDigest()));
+        assertThrows(IllegalArgumentException.class, () ->
+            new ProtocolFinalResponseDelivery(
+                ProtocolFinalResponseDelivery.Mode.REDIRECT,
+                "A".repeat(ProtocolFinalResponseBundle.SHA_256_HEX_LENGTH)));
+        assertThrows(IllegalArgumentException.class, () ->
+            ProtocolFinalResponseDelivery.canonical(
+                ProtocolFinalResponseDelivery.Mode.REDIRECT,
+                " ",
+                Map.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+            ProtocolFinalResponseDelivery.canonical(
+                ProtocolFinalResponseDelivery.Mode.REDIRECT,
+                "https://service.example.org\n",
+                Map.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+            ProtocolFinalResponseDelivery.canonical(
+                ProtocolFinalResponseDelivery.Mode.REDIRECT,
+                "https://service.example.org",
+                Map.of("ticket", "\uD800")));
+        assertThrows(IllegalArgumentException.class, () ->
+            ProtocolFinalResponseDelivery.canonical(
+                ProtocolFinalResponseDelivery.Mode.REDIRECT,
+                "x".repeat(
+                    ProtocolFinalResponseDelivery
+                        .MAXIMUM_PRIMARY_UTF8_BYTES + 1),
+                Map.of()));
+    }
+
+    @Test
+    void verifyV2ManifestBindsDeliveryAndRejectsBoundaryConfusion() {
+        val delivery = serviceDelivery(
+            ProtocolFinalResponseDelivery.Mode.REDIRECT);
+        val delivered = ProtocolFinalResponseBundle.create(
+            BUNDLE_ID,
+            ProtocolFinalResponseContext.Protocol.CAS,
+            ProtocolFinalResponseContext.ResponseType.CAS_SERVICE_RESPONSE,
+            "CAS_LOGIN",
+            SUBJECT_ID,
+            GENERATION,
+            RELYING_PARTY,
+            delivery,
+            items().size(),
+            items());
+        val changedDelivery = serviceDelivery(
+            ProtocolFinalResponseDelivery.Mode.POST);
+        val changed = ProtocolFinalResponseBundle.create(
+            BUNDLE_ID,
+            delivered.protocol(),
+            delivered.responseType(),
+            delivered.purpose(),
+            delivered.subjectId(),
+            delivered.generation(),
+            delivered.relyingPartyBinding(),
+            changedDelivery,
+            delivered.expectedCount(),
+            delivered.items());
+
+        assertEquals(delivery, delivered.delivery());
+        assertNotEquals(
+            bundle(items()).manifestIdentity(),
+            delivered.manifestIdentity());
+        assertNotEquals(
+            delivered.manifestIdentity(),
+            changed.manifestIdentity());
+        assertThrows(IllegalArgumentException.class, () ->
+            new ProtocolFinalResponseBundle(
+                delivered.bundleId(),
+                delivered.protocol(),
+                delivered.responseType(),
+                delivered.purpose(),
+                delivered.subjectId(),
+                delivered.generation(),
+                delivered.relyingPartyBinding(),
+                changedDelivery,
+                delivered.expectedCount(),
+                delivered.manifestIdentity(),
+                delivered.items()));
+        assertThrows(IllegalArgumentException.class, () ->
+            ProtocolFinalResponseBundle.create(
+                BUNDLE_ID,
+                ProtocolFinalResponseContext.Protocol.CAS,
+                ProtocolFinalResponseContext.ResponseType.CAS_SERVICE_RESPONSE,
+                "CAS_LOGIN",
+                SUBJECT_ID,
+                GENERATION,
+                RELYING_PARTY,
+                ProtocolFinalResponseDelivery.canonical(
+                    ProtocolFinalResponseDelivery.Mode.HTTP_COOKIE,
+                    "TGT-capability-secret",
+                    Map.of("cookie_name", "TGC")),
+                items().size(),
+                items()));
+
+        val browserItem = ProtocolFinalResponseBundle.Item.sourced(
+            0,
+            ProtocolFinalResponseCapability.managed(
+                ProtocolFinalResponseCapability.Type
+                    .CAS_TICKET_GRANTING_TICKET,
+                "TGT-capability-secret",
+                SUBJECT_ID,
+                GENERATION,
+                INTENT_ID),
+            INTENT_ID,
+            0);
+        assertThrows(IllegalArgumentException.class, () ->
+            ProtocolFinalResponseBundle.create(
+                BUNDLE_ID,
+                ProtocolFinalResponseContext.Protocol.CAS,
+                ProtocolFinalResponseContext.ResponseType
+                    .CAS_BROWSER_SSO_SESSION,
+                "CAS_LOGIN",
+                SUBJECT_ID,
+                GENERATION,
+                null,
+                delivery,
+                1,
+                List.of(browserItem)));
     }
 
     @Test
@@ -397,151 +540,17 @@ class ProtocolFinalResponseCommitPolicyTests {
     }
 
     @Test
-    void verifyLeaseIsFencedExactTimeBoundAndRedacted() {
-        val bundle = bundle(items());
-        val expiresAt = System.currentTimeMillis() + 60_000;
-        val lease = lease(bundle, expiresAt);
-
-        assertDoesNotThrow(() -> lease.requireMatches(bundle));
-        assertFalse(lease.isExpiredAt(expiresAt - 1));
-        assertTrue(lease.isExpiredAt(expiresAt));
-        assertFalse(lease.toString().contains(BUNDLE_ID));
-        assertFalse(lease.toString().contains(LEASE_ID));
-        assertFalse(lease.toString().contains(OWNER_TOKEN));
-        assertFalse(lease.toString().contains(bundle.manifestIdentity()));
-        assertThrows(IllegalArgumentException.class, () ->
-            lease.requireMatches(ProtocolFinalResponseBundle.create(
-                "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
-                bundle.protocol(),
-                bundle.responseType(),
-                bundle.purpose(),
-                bundle.subjectId(),
-                bundle.generation(),
-                bundle.relyingPartyBinding(),
-                bundle.expectedCount(),
-                bundle.items())));
-        assertThrows(IllegalArgumentException.class, () ->
-            ProtocolFinalResponseLease.active(
-                BUNDLE_ID,
-                LEASE_ID,
-                OWNER_TOKEN,
-                0,
-                expiresAt,
-                bundle.manifestIdentity()));
-        val expired = new ProtocolFinalResponseLease(
-            BUNDLE_ID,
-            LEASE_ID,
-            OWNER_TOKEN,
-            1,
-            1,
-            bundle.manifestIdentity());
-        assertTrue(expired.isExpiredAt(System.currentTimeMillis()));
-        assertThrows(IllegalArgumentException.class, () ->
-            ProtocolFinalResponseLease.active(
-                BUNDLE_ID,
-                LEASE_ID,
-                OWNER_TOKEN,
-                1,
-                System.currentTimeMillis(),
-                bundle.manifestIdentity()));
-        assertThrows(IllegalArgumentException.class, () ->
-            new ProtocolFinalResponseLease(
-                BUNDLE_ID,
-                LEASE_ID,
-                OWNER_TOKEN,
-                1,
-                expiresAt,
-                bundle.manifestIdentity().toUpperCase(Locale.ENGLISH)));
-        assertThrows(IllegalArgumentException.class, () ->
-            lease.isExpiredAt(0));
-    }
-
-    @Test
-    void verifyCommitResultsAreTypedExactAndRedacted() {
-        val bundle = bundle(items());
-        val result = new ProtocolFinalResponseCommitResult(
-            bundle.bundleId(),
-            bundle.manifestIdentity(),
-            ProtocolFinalResponseCommitResult.Operation.COMMIT,
-            ProtocolFinalResponseCommitResult.Outcome.APPLIED,
-            null);
-        val aborted = new ProtocolFinalResponseCommitResult(
-            bundle.bundleId(),
-            bundle.manifestIdentity(),
-            ProtocolFinalResponseCommitResult.Operation.ABORT,
-            ProtocolFinalResponseCommitResult.Outcome.REPLAY,
-            ProtocolFinalResponseCommitPolicy.AbortReason
-                .RECOVERY_CONFIRMED_UNDISCLOSED);
-
-        assertDoesNotThrow(() -> result.requireMatches(
-            bundle, ProtocolFinalResponseCommitResult.Operation.COMMIT, null));
-        assertDoesNotThrow(() -> aborted.requireMatches(
-            bundle,
-            ProtocolFinalResponseCommitResult.Operation.ABORT,
-            ProtocolFinalResponseCommitPolicy.AbortReason
-                .RECOVERY_CONFIRMED_UNDISCLOSED));
-        assertThrows(IllegalArgumentException.class, () ->
-            result.requireMatches(
-                bundle,
-                ProtocolFinalResponseCommitResult.Operation.ABORT,
-                ProtocolFinalResponseCommitPolicy.AbortReason
-                    .RECOVERY_CONFIRMED_UNDISCLOSED));
-        assertThrows(IllegalArgumentException.class, () ->
-            aborted.requireMatches(
-                bundle,
-                ProtocolFinalResponseCommitResult.Operation.ABORT,
-                ProtocolFinalResponseCommitPolicy.AbortReason
-                    .RESPONSE_BUILD_FAILED_BEFORE_DISCLOSURE));
-        assertFalse(result.toString().contains(BUNDLE_ID));
-        assertFalse(result.toString().contains(bundle.manifestIdentity()));
-        assertThrows(IllegalArgumentException.class, () ->
-            new ProtocolFinalResponseCommitResult(
-                bundle.bundleId(),
-                "x".repeat(ProtocolFinalResponseBundle.SHA_256_HEX_LENGTH),
-                ProtocolFinalResponseCommitResult.Operation.COMMIT,
-                ProtocolFinalResponseCommitResult.Outcome.APPLIED,
-                null));
-        assertThrows(IllegalArgumentException.class, () ->
-            new ProtocolFinalResponseCommitResult(
-                bundle.bundleId(),
-                bundle.manifestIdentity(),
-                ProtocolFinalResponseCommitResult.Operation.COMMIT,
-                ProtocolFinalResponseCommitResult.Outcome.APPLIED,
-                ProtocolFinalResponseCommitPolicy.AbortReason
-                    .RECOVERY_CONFIRMED_UNDISCLOSED));
-        assertThrows(IllegalArgumentException.class, () ->
-            new ProtocolFinalResponseCommitResult(
-                bundle.bundleId(),
-                bundle.manifestIdentity(),
-                ProtocolFinalResponseCommitResult.Operation.ABORT,
-                ProtocolFinalResponseCommitResult.Outcome.APPLIED,
-                null));
-    }
-
-    @Test
     void verifyCommitFailuresAreTypedFailClosedAndSecretFree() {
-        val bundle = bundle(items());
-        val lease = lease(bundle, System.currentTimeMillis() + 60_000);
-        val policy = rejectingPolicy(
+        val failure = new ProtocolFinalResponseCommitException(
             ProtocolFinalResponseCommitException.Code.GENERATION_CLOSED);
 
-        val failure = assertThrows(
-            ProtocolFinalResponseCommitException.class,
-            () -> policy.commit(bundle, lease));
-        assertThrows(
-            ProtocolFinalResponseCommitException.class,
-            () -> policy.abort(
-                bundle,
-                lease,
-                ProtocolFinalResponseCommitPolicy.AbortReason
-                    .RESPONSE_BUILD_FAILED_BEFORE_DISCLOSURE));
         assertEquals(
             ProtocolFinalResponseCommitException.Code.GENERATION_CLOSED,
             failure.getCode());
         assertFalse(failure.isRetryable());
         assertFalse(failure.getMessage().contains(BUNDLE_ID));
-        assertFalse(failure.getMessage().contains(OWNER_TOKEN));
-        assertFalse(failure.getMessage().contains(bundle.manifestIdentity()));
+        assertFalse(failure.getMessage().contains(SUBJECT_ID));
+        assertFalse(failure.getMessage().contains(RELYING_PARTY));
         assertTrue(new ProtocolFinalResponseCommitException(
             ProtocolFinalResponseCommitException.Code.AUTHORITY_UNAVAILABLE)
             .isRetryable());
@@ -554,44 +563,26 @@ class ProtocolFinalResponseCommitPolicyTests {
         assertFalse(new ProtocolFinalResponseCommitException(
             ProtocolFinalResponseCommitException.Code.OUTCOME_UNCERTAIN)
             .isRetryable());
-        assertNotEquals(
-            ProtocolFinalResponseCommitPolicy.AbortReason
-                .RESPONSE_BUILD_FAILED_BEFORE_DISCLOSURE,
-            ProtocolFinalResponseCommitPolicy.AbortReason
-                .RECOVERY_CONFIRMED_UNDISCLOSED);
-
-        val methodNames = Arrays.stream(
-            ProtocolFinalResponseCommitPolicy.class.getDeclaredMethods())
-            .map(Method::getName)
-            .collect(Collectors.toSet());
-        assertEquals(
-            Set.of("acquire", "renew", "commit", "abort"),
-            methodNames);
+        assertThrows(NullPointerException.class,
+            () -> new ProtocolFinalResponseCommitException(null));
     }
 
     @Test
-    void verifyBundleLeaseAndResultAreSerializable() throws Exception {
+    void verifyBundlesAreSerializable() throws Exception {
         val bundle = bundle(items());
-        val lease = lease(bundle, System.currentTimeMillis() + 60_000);
-        val expiredLease = new ProtocolFinalResponseLease(
+        val deliveredBundle = ProtocolFinalResponseBundle.create(
             bundle.bundleId(),
-            LEASE_ID,
-            OWNER_TOKEN,
-            2,
-            1,
-            bundle.manifestIdentity());
-        val result = new ProtocolFinalResponseCommitResult(
-            bundle.bundleId(),
-            bundle.manifestIdentity(),
-            ProtocolFinalResponseCommitResult.Operation.ABORT,
-            ProtocolFinalResponseCommitResult.Outcome.REPLAY,
-            ProtocolFinalResponseCommitPolicy.AbortReason
-                .RECOVERY_CONFIRMED_UNDISCLOSED);
-
+            bundle.protocol(),
+            bundle.responseType(),
+            bundle.purpose(),
+            bundle.subjectId(),
+            bundle.generation(),
+            bundle.relyingPartyBinding(),
+            serviceDelivery(ProtocolFinalResponseDelivery.Mode.REDIRECT),
+            bundle.expectedCount(),
+            bundle.items());
         assertEquals(bundle, serialize(bundle));
-        assertEquals(lease, serialize(lease));
-        assertEquals(expiredLease, serialize(expiredLease));
-        assertEquals(result, serialize(result));
+        assertEquals(deliveredBundle, serialize(deliveredBundle));
     }
 
     private static ProtocolFinalResponseBundle bundle(
@@ -606,6 +597,14 @@ class ProtocolFinalResponseCommitPolicyTests {
             RELYING_PARTY,
             values.size(),
             values);
+    }
+
+    private static ProtocolFinalResponseDelivery serviceDelivery(
+        final ProtocolFinalResponseDelivery.Mode mode) {
+        return ProtocolFinalResponseDelivery.canonical(
+            mode,
+            "https://service.example.org?ticket=ST-capability-secret",
+            Map.of("ticket", "ST-capability-secret"));
     }
 
     private static ProtocolFinalResponseBundle createWithBundleId(
@@ -800,54 +799,6 @@ class ProtocolFinalResponseCommitPolicyTests {
     private record Boundary(
         ProtocolFinalResponseContext.Protocol protocol,
         ProtocolFinalResponseContext.ResponseType responseType) {
-    }
-
-    private static ProtocolFinalResponseLease lease(
-        final ProtocolFinalResponseBundle bundle,
-        final long expiresAtEpochMilli) {
-        return ProtocolFinalResponseLease.active(
-            bundle.bundleId(),
-            LEASE_ID,
-            OWNER_TOKEN,
-            3,
-            expiresAtEpochMilli,
-            bundle.manifestIdentity());
-    }
-
-    private static ProtocolFinalResponseCommitPolicy rejectingPolicy(
-        final ProtocolFinalResponseCommitException.Code code) {
-        return new ProtocolFinalResponseCommitPolicy() {
-            @Override
-            public ProtocolFinalResponseLease acquire(
-                final ProtocolFinalResponseBundle bundle,
-                final String ownerToken,
-                final Duration requestedLeaseDuration) {
-                throw new ProtocolFinalResponseCommitException(code);
-            }
-
-            @Override
-            public ProtocolFinalResponseLease renew(
-                final ProtocolFinalResponseBundle bundle,
-                final ProtocolFinalResponseLease lease,
-                final Duration requestedLeaseDuration) {
-                throw new ProtocolFinalResponseCommitException(code);
-            }
-
-            @Override
-            public ProtocolFinalResponseCommitResult commit(
-                final ProtocolFinalResponseBundle bundle,
-                final ProtocolFinalResponseLease lease) {
-                throw new ProtocolFinalResponseCommitException(code);
-            }
-
-            @Override
-            public ProtocolFinalResponseCommitResult abort(
-                final ProtocolFinalResponseBundle bundle,
-                final ProtocolFinalResponseLease lease,
-                final AbortReason reason) {
-                throw new ProtocolFinalResponseCommitException(code);
-            }
-        };
     }
 
     @SuppressWarnings("unchecked")

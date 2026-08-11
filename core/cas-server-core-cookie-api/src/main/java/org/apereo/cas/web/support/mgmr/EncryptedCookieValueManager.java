@@ -37,20 +37,30 @@ public class EncryptedCookieValueManager implements CookieValueManager {
 
     @Override
     public final String buildCookieValue(final String givenCookieValue, final HttpServletRequest request) {
+        return prepareCookieValue(givenCookieValue, request).outputValue();
+    }
+
+    @Override
+    public final PreparedCookieValue prepareCookieValue(
+        final String givenCookieValue,
+        final HttpServletRequest request) {
         val cookieValue = buildCompoundCookieValue(givenCookieValue, request);
-        LOGGER.trace("Encoding cookie value [{}]", cookieValue);
-        return determineCipherExecutor(request).encode(cookieValue, ArrayUtils.EMPTY_OBJECT_ARRAY).toString();
+        LOGGER.trace("Encoding cookie value [REDACTED]");
+        val outputValue = determineCipherExecutor(request)
+            .encode(cookieValue, ArrayUtils.EMPTY_OBJECT_ARRAY)
+            .toString();
+        return new PreparedCookieValue(outputValue, cookieValue);
     }
 
     @Override
     public @Nullable String obtainCookieValue(final String cookie, final HttpServletRequest request) {
         val decoded = determineCipherExecutor(request).decode(cookie, ArrayUtils.EMPTY_OBJECT_ARRAY);
         if (decoded == null) {
-            LOGGER.trace("Could not decode cookie value [{}] for cookie", cookie);
+            LOGGER.trace("Could not decode cookie value [REDACTED]");
             return null;
         }
         val cookieValue = decoded.toString();
-        LOGGER.trace("Decoded cookie value is [{}]", cookieValue);
+        LOGGER.trace("Decoded cookie value is [REDACTED]");
         if (StringUtils.isBlank(cookieValue)) {
             LOGGER.trace("Retrieved decoded cookie value is blank. Failed to decode cookie");
             return null;

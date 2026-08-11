@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: Build and audit locally without publishing packages or attestations
+        description: Build and audit the candidate without entering the protected release environment
         required: true
         default: true
         type: boolean
@@ -16,17 +16,17 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: casidp-release-${{ inputs.release_tag }}
-  cancel-in-progress: false
-
 jobs:
-  release:
-    name: Build, attest, and explicitly publish the fork
-    if: ${{ github.repository == 'SoooEZ/cas' }}
+  candidate:
+    name: Build an unsigned, secretless release candidate
+    if: ${{ github.repository == 'SoooEZ/cas' && github.ref_type == 'tag' && github.ref_name == inputs.release_tag }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    environment: casidp-release
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+      candidate_sha256: ${{ steps.package.outputs.candidate_sha256 }}
     services:
       redis:
         image: redis:7.4.7-alpine@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf
@@ -37,26 +37,50 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
 
     steps:
-      - name: Check out the existing release tag
+      - name: Check out the trusted workflow-dispatch commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
 
-      - name: Set up JDK 25
+      - name: Download the exact Amazon Corretto 25.0.4.7.1 archive
+        env:
+          CORRETTO_SHA256: 1d03a3bd5091728492d92f0ef341aca7d8885ece9a150119558f3e3d62b58745
+          CORRETTO_URL: https://corretto.aws/downloads/resources/25.0.4.7.1/amazon-corretto-25.0.4.7.1-linux-x64.tar.gz
+        run: |
+          set -Eeuo pipefail
+          archive="${RUNNER_TEMP}/amazon-corretto-25.0.4.7.1-linux-x64.tar.gz"
+          curl \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --tlsv1.2 \
+            --fail \
+            --show-error \
+            --silent \
+            --location \
+            --max-redirs 3 \
+            --output "${archive}" \
+            "${CORRETTO_URL}"
+          printf '%s  %s\n' "${CORRETTO_SHA256}" "${archive}" | sha256sum --check -
+
+      - name: Set up the checksum-pinned JDK
         uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
         with:
-          distribution: corretto
-          java-version: '25'
+          distribution: jdkfile
+          java-version: '25.0.4+7'
+          architecture: x64
+          jdk-file: ${{ runner.temp }}/amazon-corretto-25.0.4.7.1-linux-x64.tar.gz
+
+      - name: Verify the exact Java runtime
+        run: |
+          set -Eeuo pipefail
+          java_version=$(java -version 2>&1)
+          grep -Fq 'openjdk version "25.0.4"' <<< "${java_version}"
+          grep -Fq 'Corretto-25.0.4.7.1' <<< "${java_version}"
 
       - name: Set up Gradle with a read-only dependency cache
         uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
@@ -64,64 +88,319 @@ jobs:
           cache-read-only: true
           validate-wrappers: true
 
-      - name: Build and audit a non-publishing release candidate
-        if: ${{ inputs.dry_run }}
+      - name: Build and audit the unsigned candidate
         env:
-          CASIDP_RELEASE_TAG: ${{ inputs.release_tag }}
-          CASIDP_SIGNING_FINGERPRINT: ${{ secrets.CASIDP_SIGNING_FINGERPRINT }}
-          PGP_PRIVATE_KEY: ${{ secrets.PGP_PRIVATE_KEY }}
-          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+          CASIDP_RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -Eeuo pipefail
           chmod +x ci/casidp-release.sh ci/casidp-supply-chain.py
-          ./ci/casidp-release.sh --dry-run
+          ./ci/casidp-release.sh --dry-run --unsigned
 
-      - name: Prepare an immutable candidate for explicit publication
-        if: ${{ inputs.dry_run == false }}
+      - name: Package the exact audited candidate
+        id: package
         env:
-          CASIDP_RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_ARTIFACT_NAME: casidp-release-candidate-${{ github.ref_name }}-${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          archive="${RUNNER_TEMP}/${CANDIDATE_ARTIFACT_NAME}.tar"
+          tar \
+            --format=posix \
+            --sort=name \
+            --mtime="@$(git show -s --format=%ct HEAD)" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -cf "${archive}" \
+            .casidp-release/repository \
+            .casidp-release/SHA256SUMS \
+            .casidp-release/casidp-release-manifest.json \
+            .casidp-release/casidp.cdx.json \
+            .casidp-release/publish-task-graph.json \
+            .casidp-release/publish-task-graph.log
+          digest=$(sha256sum "${archive}" | awk '{print $1}')
+          printf '%s  %s\n' "${digest}" "$(basename "${archive}")" \
+            > "${archive}.sha256"
+          printf 'artifact_name=%s\n' "${CANDIDATE_ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
+          printf 'candidate_sha256=%s\n' "${digest}" >> "${GITHUB_OUTPUT}"
+          printf 'Candidate archive SHA-256: %s\n' "${digest}"
+
+      - name: Preserve the complete unsigned candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          path: |
+            ${{ runner.temp }}/${{ steps.package.outputs.artifact_name }}.tar
+            ${{ runner.temp }}/${{ steps.package.outputs.artifact_name }}.tar.sha256
+
+  sign:
+    name: Sign and attest the exact candidate without package access
+    needs: candidate
+    if: ${{ github.repository == 'SoooEZ/cas' && github.ref_type == 'tag' && github.ref_name == inputs.release_tag && inputs.dry_run == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: casidp-release-sign
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      signed_artifact_name: ${{ steps.package_signed.outputs.signed_artifact_name }}
+      signed_candidate_sha256: ${{ steps.package_signed.outputs.signed_candidate_sha256 }}
+
+    steps:
+      - name: Check out the trusted workflow-dispatch commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Download the unsigned candidate produced by this run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.candidate.outputs.artifact_name }}
+          path: ${{ runner.temp }}/casidp-unsigned-candidate
+
+      - name: Verify and extract the exact unsigned candidate archive
+        env:
+          CANDIDATE_ARTIFACT_NAME: ${{ needs.candidate.outputs.artifact_name }}
+          EXPECTED_CANDIDATE_SHA256: ${{ needs.candidate.outputs.candidate_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          archive="${RUNNER_TEMP}/casidp-unsigned-candidate/${CANDIDATE_ARTIFACT_NAME}.tar"
+          checksum="${archive}.sha256"
+          actual=$(sha256sum "${archive}" | awk '{print $1}')
+          [[ "${actual}" == "${EXPECTED_CANDIDATE_SHA256}" ]]
+          [[ "$(awk '{print $1}' "${checksum}")" == "${EXPECTED_CANDIDATE_SHA256}" ]]
+          [[ "$(awk '{print $2}' "${checksum}")" == "$(basename "${archive}")" ]]
+          [[ ! -e .casidp-release ]]
+          python3 - "${archive}" <<'PY'
+          import pathlib
+          import sys
+          import tarfile
+
+          archive = pathlib.Path(sys.argv[1])
+          required = {
+              ".casidp-release/SHA256SUMS",
+              ".casidp-release/casidp-release-manifest.json",
+              ".casidp-release/casidp.cdx.json",
+              ".casidp-release/publish-task-graph.json",
+              ".casidp-release/publish-task-graph.log",
+          }
+          repository_prefix = ".casidp-release/repository/"
+          with tarfile.open(archive, "r:") as candidate:
+              names = set()
+              repository_files = 0
+              for member in candidate.getmembers():
+                  name = member.name.removeprefix("./")
+                  if name in names:
+                      raise SystemExit(f"Duplicate candidate archive member: {name}")
+                  names.add(name)
+                  path = pathlib.PurePosixPath(name)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"Unsafe candidate archive path: {name}")
+                  if member.issym() or member.islnk() or member.isdev():
+                      raise SystemExit(f"Unsafe candidate archive member: {name}")
+                  if not (
+                      name in required
+                      or name in {".casidp-release", ".casidp-release/repository"}
+                      or name.startswith(repository_prefix)
+                  ):
+                      raise SystemExit(f"Unexpected candidate archive member: {name}")
+                  if member.isfile():
+                      repository_files += int(name.startswith(repository_prefix))
+              missing = sorted(required - names)
+              if missing or repository_files == 0:
+                  raise SystemExit(
+                      f"Incomplete candidate archive: missing={missing}, "
+                      f"repositoryFiles={repository_files}"
+                  )
+              candidate.extractall(path=".", filter="data")
+          PY
+          printf 'Verified unsigned candidate archive SHA-256: %s\n' "${actual}"
+
+      - name: Sign the existing staged bytes without a publication token
+        env:
+          CASIDP_RELEASE_TAG: ${{ github.ref_name }}
           CASIDP_SIGNING_FINGERPRINT: ${{ secrets.CASIDP_SIGNING_FINGERPRINT }}
           PGP_PRIVATE_KEY: ${{ secrets.PGP_PRIVATE_KEY }}
           PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
           chmod +x ci/casidp-release.sh ci/casidp-supply-chain.py
-          ./ci/casidp-release.sh --prepare
+          ./ci/casidp-release.sh --sign-existing
 
       - name: Attest the aggregate SHA-256 release manifest
-        if: ${{ inputs.dry_run == false }}
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: .casidp-release/SHA256SUMS
 
       - name: Attest the CycloneDX SBOM
-        if: ${{ inputs.dry_run == false }}
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
         with:
           subject-path: .casidp-release/SHA256SUMS
           sbom-path: .casidp-release/casidp.cdx.json
 
       - name: Attest the complete release manifest
-        if: ${{ inputs.dry_run == false }}
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
         with:
           subject-path: .casidp-release/SHA256SUMS
           predicate-type: https://github.com/SoooEZ/cas/attestations/casidp-release-manifest/v1
           predicate-path: .casidp-release/casidp-release-manifest.json
 
-      - name: Explicitly publish and read back every package file
-        if: ${{ inputs.dry_run == false }}
+      - name: Package the exact signed candidate
+        id: package_signed
         env:
-          CASIDP_RELEASE_TAG: ${{ inputs.release_tag }}
-          CASIDP_SIGNING_FINGERPRINT: ${{ secrets.CASIDP_SIGNING_FINGERPRINT }}
-          PGP_PRIVATE_KEY: ${{ secrets.PGP_PRIVATE_KEY }}
-          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+          SIGNED_ARTIFACT_NAME: casidp-release-signed-${{ github.ref_name }}-${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          archive="${RUNNER_TEMP}/${SIGNED_ARTIFACT_NAME}.tar"
+          tar \
+            --format=posix \
+            --sort=name \
+            --mtime="@$(git show -s --format=%ct HEAD)" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -cf "${archive}" \
+            .casidp-release/repository \
+            .casidp-release/SHA256SUMS \
+            .casidp-release/SHA256SUMS.asc \
+            .casidp-release/casidp-release-manifest.json \
+            .casidp-release/casidp-release-manifest.json.asc \
+            .casidp-release/casidp.cdx.json \
+            .casidp-release/casidp.cdx.json.asc \
+            .casidp-release/casidp-signing-public-key.asc \
+            .casidp-release/publish-task-graph.json \
+            .casidp-release/publish-task-graph.json.asc \
+            .casidp-release/publish-task-graph.log \
+            .casidp-release/publish-task-graph.log.asc
+          digest=$(sha256sum "${archive}" | awk '{print $1}')
+          printf '%s  %s\n' "${digest}" "$(basename "${archive}")" \
+            > "${archive}.sha256"
+          printf 'signed_artifact_name=%s\n' "${SIGNED_ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
+          printf 'signed_candidate_sha256=%s\n' "${digest}" >> "${GITHUB_OUTPUT}"
+          printf 'Signed candidate archive SHA-256: %s\n' "${digest}"
+
+      - name: Preserve the complete signed candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package_signed.outputs.signed_artifact_name }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          path: |
+            ${{ runner.temp }}/${{ steps.package_signed.outputs.signed_artifact_name }}.tar
+            ${{ runner.temp }}/${{ steps.package_signed.outputs.signed_artifact_name }}.tar.sha256
+
+  publish:
+    name: Publish only the signed candidate without PGP access
+    needs: sign
+    if: ${{ github.repository == 'SoooEZ/cas' && github.ref_type == 'tag' && github.ref_name == inputs.release_tag && inputs.dry_run == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: casidp-release-publish
+    concurrency:
+      group: casidp-release-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Check out the trusted workflow-dispatch commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Download the signed candidate produced by this run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.sign.outputs.signed_artifact_name }}
+          path: ${{ runner.temp }}/casidp-signed-candidate
+
+      - name: Verify and extract the exact signed candidate archive
+        env:
+          SIGNED_ARTIFACT_NAME: ${{ needs.sign.outputs.signed_artifact_name }}
+          EXPECTED_SIGNED_CANDIDATE_SHA256: ${{ needs.sign.outputs.signed_candidate_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          archive="${RUNNER_TEMP}/casidp-signed-candidate/${SIGNED_ARTIFACT_NAME}.tar"
+          checksum="${archive}.sha256"
+          actual=$(sha256sum "${archive}" | awk '{print $1}')
+          [[ "${actual}" == "${EXPECTED_SIGNED_CANDIDATE_SHA256}" ]]
+          [[ "$(awk '{print $1}' "${checksum}")" == "${EXPECTED_SIGNED_CANDIDATE_SHA256}" ]]
+          [[ "$(awk '{print $2}' "${checksum}")" == "$(basename "${archive}")" ]]
+          [[ ! -e .casidp-release ]]
+          python3 - "${archive}" <<'PY'
+          import pathlib
+          import sys
+          import tarfile
+
+          archive = pathlib.Path(sys.argv[1])
+          required = {
+              ".casidp-release/SHA256SUMS",
+              ".casidp-release/SHA256SUMS.asc",
+              ".casidp-release/casidp-release-manifest.json",
+              ".casidp-release/casidp-release-manifest.json.asc",
+              ".casidp-release/casidp.cdx.json",
+              ".casidp-release/casidp.cdx.json.asc",
+              ".casidp-release/casidp-signing-public-key.asc",
+              ".casidp-release/publish-task-graph.json",
+              ".casidp-release/publish-task-graph.json.asc",
+              ".casidp-release/publish-task-graph.log",
+              ".casidp-release/publish-task-graph.log.asc",
+          }
+          repository_prefix = ".casidp-release/repository/"
+          with tarfile.open(archive, "r:") as candidate:
+              names = set()
+              repository_files = 0
+              for member in candidate.getmembers():
+                  name = member.name.removeprefix("./")
+                  if name in names:
+                      raise SystemExit(f"Duplicate signed-candidate archive member: {name}")
+                  names.add(name)
+                  path = pathlib.PurePosixPath(name)
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"Unsafe signed-candidate archive path: {name}")
+                  if member.issym() or member.islnk() or member.isdev():
+                      raise SystemExit(f"Unsafe signed-candidate archive member: {name}")
+                  if not (
+                      name in required
+                      or name in {".casidp-release", ".casidp-release/repository"}
+                      or name.startswith(repository_prefix)
+                  ):
+                      raise SystemExit(f"Unexpected signed-candidate archive member: {name}")
+                  if member.isfile():
+                      repository_files += int(name.startswith(repository_prefix))
+              missing = sorted(required - names)
+              if missing or repository_files == 0:
+                  raise SystemExit(
+                      f"Incomplete signed-candidate archive: missing={missing}, "
+                      f"repositoryFiles={repository_files}"
+                  )
+              candidate.extractall(path=".", filter="data")
+          PY
+          printf 'Verified signed candidate archive SHA-256: %s\n' "${actual}"
+
+      - name: Publish only the signed staged bytes
+        env:
+          CASIDP_RELEASE_TAG: ${{ github.ref_name }}
+          CASIDP_TRUSTED_SIGNING_FINGERPRINT: ${{ vars.CASIDP_TRUSTED_SIGNING_FINGERPRINT }}
+          GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ github.token }}
         run: ./ci/casidp-release.sh --publish
 
       - name: Attest successful publication completion
-        if: ${{ inputs.dry_run == false }}
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
         with:
           subject-path: .casidp-release/SHA256SUMS
@@ -132,10 +411,11 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: casidp-release-evidence-${{ inputs.release_tag }}
+          name: casidp-release-evidence-${{ github.ref_name }}-${{ github.sha }}
           if-no-files-found: warn
           retention-days: 90
           compression-level: 0
+          include-hidden-files: true
           path: |
             .casidp-release/SHA256SUMS
             .casidp-release/SHA256SUMS.asc
@@ -143,7 +423,9 @@ jobs:
             .casidp-release/casidp-release-manifest.json.asc
             .casidp-release/casidp.cdx.json
             .casidp-release/casidp.cdx.json.asc
+            .casidp-release/casidp-signing-public-key.asc
             .casidp-release/publish-task-graph.json
             .casidp-release/publish-task-graph.json.asc
             .casidp-release/publish-task-graph.log
+            .casidp-release/publish-task-graph.log.asc
             .casidp-release/casidp-publication.json

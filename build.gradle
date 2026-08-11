@@ -10,6 +10,7 @@ import org.cyclonedx.Version
 import org.cyclonedx.model.Component
 import org.cyclonedx.parsers.JsonParser
 
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 description = "Apereo Central Authentication Service $version"
@@ -26,6 +27,10 @@ buildscript {
             }
             mavenContent { releasesOnly() }
         }
+    }
+
+    configurations.classpath {
+        resolutionStrategy.failOnNonReproducibleResolution()
     }
 
     dependencies {
@@ -57,7 +62,8 @@ ext {
 
     casIdpForkPublish = providers.systemProperty("casIdpForkPublish")
         .map(String::toBoolean).getOrElse(false)
-    artifactReleaseBuild = publishFlag || casIdpForkPublish
+    casIdpReproducibleMode = casIdpForkPublish || gradle.startParameter.writeDependencyLocks
+    artifactReleaseBuild = publishFlag || casIdpReproducibleMode
 
     publishMinimalArtifacts = providers.systemProperty("publishMinimalArtifacts").present
 
@@ -89,7 +95,56 @@ ext {
 apply plugin: "org.apereo.cas.root-conventions"
 apply plugin: "org.apereo.cas.overrides-conventions"
 
-def casIdpCycloneDxRequested = gradle.startParameter.taskNames.any {
+def vendoredSourceInputs = [
+    'support/cas-server-support-spnego/lib/jcifs-ext.jar':
+        '1bb68a993ea427210c1e3a1235a576bf0049625c19a5bef204a42ca7d81d496a'
+].asImmutable()
+
+def verifyVendoredSourceInputs = tasks.register('verifyVendoredSourceInputs') {
+    group = 'verification'
+    description = 'Verify immutable SHA-256 digests for vendored source inputs.'
+    inputs.files(vendoredSourceInputs.keySet().collect(rootProject.&file))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.property('expectedSha256', vendoredSourceInputs)
+
+    doLast {
+        vendoredSourceInputs.each { relativePath, expectedSha256 ->
+            def sourceInput = rootProject.file(relativePath)
+            if (!sourceInput.isFile()) {
+                throw new GradleException("Required vendored source input is missing: ${relativePath}")
+            }
+
+            def digest = MessageDigest.getInstance('SHA-256')
+            sourceInput.withInputStream { inputStream ->
+                byte[] buffer = new byte[8192]
+                for (int count = inputStream.read(buffer); count != -1; count = inputStream.read(buffer)) {
+                    digest.update(buffer, 0, count)
+                }
+            }
+            def actualSha256 = digest.digest().encodeHex().toString()
+            if (actualSha256 != expectedSha256) {
+                throw new GradleException(
+                    "Vendored source input ${relativePath} has SHA-256 ${actualSha256}; "
+                        + "expected ${expectedSha256}"
+                )
+            }
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn verifyVendoredSourceInputs
+}
+
+def casIdpCycloneDxLockProperty = System.getProperty('casIdpResolveCycloneDxLock')
+if (casIdpCycloneDxLockProperty != null && casIdpCycloneDxLockProperty != 'true') {
+    throw new GradleException('casIdpResolveCycloneDxLock must be exactly true when present')
+}
+def casIdpCycloneDxLockRequested = casIdpCycloneDxLockProperty == 'true'
+if (casIdpCycloneDxLockRequested && !gradle.startParameter.writeDependencyLocks) {
+    throw new GradleException('casIdpResolveCycloneDxLock is restricted to --write-locks review jobs')
+}
+def casIdpCycloneDxRequested = casIdpCycloneDxLockRequested || gradle.startParameter.taskNames.any {
     it.tokenize(':').last() in ['cyclonedxBom', 'validateCasIdpCycloneDxBom']
 }
 if (casIdpCycloneDxRequested) {

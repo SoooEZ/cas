@@ -37,7 +37,7 @@ TestCategories.values().each { testCategory ->
 
                 def ptsEnabled = shouldWeTest && testCategory.ptsEnabled
                     && Boolean.valueOf(System.getProperty('PTS_ENABLED') ?: 'true')
-                    && !publishReleases && !casIdpForkPublish
+                    && !publishReleases && !casIdpReproducibleMode
                 develocity.predictiveTestSelection {
                     enabled = ptsEnabled
                     mergeCodeCoverage = true

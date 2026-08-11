@@ -3,7 +3,7 @@ package org.apereo.cas.protocol;
 import module java.base;
 
 /**
- * Fail-closed final-response lease or commit rejection.
+ * Fail-closed final-response authority or exact commit rejection.
  *
  * <p>The exception contains only a stable code and retry classification.
  * Bundle identifiers, lease credentials, subjects, relying parties, manifests,
@@ -42,7 +42,7 @@ public class ProtocolFinalResponseCommitException extends RuntimeException {
     }
 
     /**
-     * Whether state reconciliation may make a new acquire attempt safe.
+     * Whether state reconciliation may make a new authorization attempt safe.
      *
      * @return true when a new attempt may be retried
      */
@@ -91,7 +91,7 @@ public class ProtocolFinalResponseCommitException extends RuntimeException {
         }
 
         /**
-         * Whether this failure may be retried by acquiring a fresh lease.
+         * Whether this failure may be retried by starting fresh authorization.
          *
          * @return retry classification
          */

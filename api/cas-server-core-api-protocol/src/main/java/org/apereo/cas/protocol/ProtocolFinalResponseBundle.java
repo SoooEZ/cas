@@ -26,6 +26,8 @@ import lombok.val;
  * @param generation positive subject-security generation
  * @param relyingPartyBinding exact relying-party, audience, or client binding;
  * required except for browser SSO and CAS REST responses, where it is forbidden
+ * @param delivery optional exact delivery representation; legacy upstream
+ * callers may omit it, while authoritative commit integrations should require it
  * @param expectedCount exact number of manifest items
  * @param manifestIdentity SHA-256 identity of this exact manifest
  * @param items exact ordered response items
@@ -39,6 +41,7 @@ public record ProtocolFinalResponseBundle(
     String subjectId,
     long generation,
     String relyingPartyBinding,
+    ProtocolFinalResponseDelivery delivery,
     int expectedCount,
     String manifestIdentity,
     List<Item> items) implements Serializable {
@@ -67,7 +70,11 @@ public record ProtocolFinalResponseBundle(
     @Serial
     private static final long serialVersionUID = -2651032979119036980L;
 
-    private static final String MANIFEST_DOMAIN = "cas-protocol-final-response-manifest-v1";
+    private static final String MANIFEST_DOMAIN_V1 =
+        "cas-protocol-final-response-manifest-v1";
+
+    private static final String MANIFEST_DOMAIN_V2 =
+        "cas-protocol-final-response-manifest-v2";
 
     private static final Pattern CANONICAL_TOKEN_PATTERN =
         Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
@@ -98,6 +105,9 @@ public record ProtocolFinalResponseBundle(
         }
         validateResponseBoundary(
             protocol, responseType, relyingPartyBinding);
+        if (delivery != null) {
+            validateDeliveryBoundary(protocol, responseType, delivery.mode());
+        }
         if (expectedCount < 1 || expectedCount > MAXIMUM_ITEM_COUNT) {
             throw new IllegalArgumentException(
                 "expectedCount is outside the supported range");
@@ -133,13 +143,44 @@ public record ProtocolFinalResponseBundle(
 
         val calculatedIdentity = calculateManifestIdentity(
             bundleId, protocol, responseType, purpose, subjectId, generation,
-            relyingPartyBinding, expectedCount, items);
+            relyingPartyBinding, delivery, expectedCount, items);
         if (!MessageDigest.isEqual(
             manifestIdentity.getBytes(StandardCharsets.US_ASCII),
             calculatedIdentity.getBytes(StandardCharsets.US_ASCII))) {
             throw new IllegalArgumentException(
                 "manifestIdentity does not describe the exact response manifest");
         }
+    }
+
+    /**
+     * Backwards-compatible constructor for a legacy v1 manifest without exact
+     * delivery binding.
+     *
+     * @param bundleId durable bundle identifier
+     * @param protocol protocol family
+     * @param responseType final response type
+     * @param purpose response purpose
+     * @param subjectId subject identifier
+     * @param generation subject-security generation
+     * @param relyingPartyBinding relying-party binding
+     * @param expectedCount exact expected item count
+     * @param manifestIdentity exact legacy manifest identity
+     * @param items exact ordered items
+     */
+    public ProtocolFinalResponseBundle(
+        final String bundleId,
+        final ProtocolFinalResponseContext.Protocol protocol,
+        final ProtocolFinalResponseContext.ResponseType responseType,
+        final String purpose,
+        final String subjectId,
+        final long generation,
+        final String relyingPartyBinding,
+        final int expectedCount,
+        final String manifestIdentity,
+        final List<Item> items) {
+        this(
+            bundleId, protocol, responseType, purpose, subjectId, generation,
+            relyingPartyBinding, null, expectedCount, manifestIdentity, items);
     }
 
     /**
@@ -167,22 +208,57 @@ public record ProtocolFinalResponseBundle(
         final String relyingPartyBinding,
         final int expectedCount,
         final List<Item> items) {
+        return create(
+            bundleId, protocol, responseType, purpose, subjectId, generation,
+            relyingPartyBinding, null, expectedCount, items);
+    }
+
+    /**
+     * Create an exact delivery-bound bundle and calculate its immutable v2
+     * manifest identity.
+     *
+     * @param bundleId durable bundle identifier
+     * @param protocol protocol family
+     * @param responseType final response type
+     * @param purpose response purpose
+     * @param subjectId subject identifier
+     * @param generation subject-security generation
+     * @param relyingPartyBinding exact relying-party binding
+     * @param delivery exact final-response delivery identity
+     * @param expectedCount exact expected item count
+     * @param items exact ordered items
+     * @return validated delivery-bound final response bundle
+     */
+    public static ProtocolFinalResponseBundle create(
+        final String bundleId,
+        final ProtocolFinalResponseContext.Protocol protocol,
+        final ProtocolFinalResponseContext.ResponseType responseType,
+        final String purpose,
+        final String subjectId,
+        final long generation,
+        final String relyingPartyBinding,
+        final ProtocolFinalResponseDelivery delivery,
+        final int expectedCount,
+        final List<Item> items) {
         val immutableItems = List.copyOf(Objects.requireNonNull(items, "items"));
         val identity = calculateManifestIdentity(
             bundleId, protocol, responseType, purpose, subjectId, generation,
-            relyingPartyBinding, expectedCount, immutableItems);
+            relyingPartyBinding, delivery, expectedCount, immutableItems);
         return new ProtocolFinalResponseBundle(
             bundleId, protocol, responseType, purpose, subjectId, generation,
-            relyingPartyBinding, expectedCount, identity, immutableItems);
+            relyingPartyBinding, delivery, expectedCount, identity,
+            immutableItems);
     }
 
     @Override
     public String toString() {
         return ("ProtocolFinalResponseBundle[bundleId=[REDACTED], protocol=%s, "
                 + "responseType=%s, purpose=%s, subjectId=[REDACTED], generation=%d, "
-                + "relyingPartyBinding=[REDACTED], expectedCount=%d, "
+                + "relyingPartyBinding=[REDACTED], delivery=%s, expectedCount=%d, "
                 + "manifestIdentity=[REDACTED], items=[REDACTED]]")
-            .formatted(protocol, responseType, purpose, generation, expectedCount);
+            .formatted(
+                protocol, responseType, purpose, generation,
+                delivery == null ? null : delivery.mode(), expectedCount);
     }
 
     static String requireUuid(final String value, final String name) {
@@ -421,6 +497,28 @@ public record ProtocolFinalResponseBundle(
         }
     }
 
+    private static void validateDeliveryBoundary(
+        final ProtocolFinalResponseContext.Protocol protocol,
+        final ProtocolFinalResponseContext.ResponseType responseType,
+        final ProtocolFinalResponseDelivery.Mode deliveryMode) {
+        val allowed = protocol == ProtocolFinalResponseContext.Protocol.CAS
+            && switch (responseType) {
+            case CAS_SERVICE_RESPONSE -> switch (deliveryMode) {
+                case REDIRECT, POST, HEADER -> true;
+                default -> false;
+            };
+            case CAS_BROWSER_SSO_SESSION -> switch (deliveryMode) {
+                case HTTP_COOKIE, STATELESS_BROWSER_STORAGE -> true;
+                default -> false;
+            };
+            default -> false;
+        };
+        if (!allowed) {
+            throw new IllegalArgumentException(
+                "delivery mode is not valid for the exact response boundary");
+        }
+    }
+
     private static String calculateManifestIdentity(
         final String bundleId,
         final ProtocolFinalResponseContext.Protocol protocol,
@@ -429,11 +527,14 @@ public record ProtocolFinalResponseBundle(
         final String subjectId,
         final long generation,
         final String relyingPartyBinding,
+        final ProtocolFinalResponseDelivery delivery,
         final int expectedCount,
         final List<Item> items) {
         try {
             val digest = MessageDigest.getInstance("SHA-256");
-            putText(digest, MANIFEST_DOMAIN);
+            putText(
+                digest,
+                delivery == null ? MANIFEST_DOMAIN_V1 : MANIFEST_DOMAIN_V2);
             putText(digest, bundleId);
             putText(digest, protocol.name());
             putText(digest, responseType.name());
@@ -441,6 +542,12 @@ public record ProtocolFinalResponseBundle(
             putText(digest, subjectId);
             putLong(digest, generation);
             putNullableText(digest, relyingPartyBinding);
+            if (delivery != null) {
+                putText(digest, delivery.mode().name());
+                putText(
+                    digest,
+                    delivery.canonicalRepresentationDigest());
+            }
             putInt(digest, expectedCount);
             putInt(digest, items.size());
             for (val item : items) {

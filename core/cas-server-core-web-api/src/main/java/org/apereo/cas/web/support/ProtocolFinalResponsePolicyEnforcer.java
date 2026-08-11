@@ -2,6 +2,7 @@ package org.apereo.cas.web.support;
 
 import module java.base;
 import org.apereo.cas.protocol.ProtocolFinalResponseContext;
+import org.apereo.cas.protocol.ProtocolFinalResponseAuthorization;
 import org.apereo.cas.protocol.ProtocolFinalResponsePolicy;
 import lombok.val;
 import org.springframework.beans.factory.BeanFactoryUtils;
@@ -28,14 +29,29 @@ public final class ProtocolFinalResponsePolicyEnforcer {
      */
     public static void enforce(final ApplicationContext applicationContext,
                                final ProtocolFinalResponseContext context) {
+        authorize(applicationContext, context);
+    }
+
+    /** Resolve, enforce, and return the exact authorized response output. */
+    public static ProtocolFinalResponseAuthorization authorize(
+        final ApplicationContext applicationContext,
+        final ProtocolFinalResponseContext context) {
         val policies = BeanFactoryUtils.beansOfTypeIncludingAncestors(
             Objects.requireNonNull(applicationContext, "applicationContext"),
             ProtocolFinalResponsePolicy.class);
         if (policies.size() > 1) {
             throw new IllegalStateException("Exactly one protocol final response policy is required");
         }
-        policies.values().stream().findFirst()
+        return policies.values().stream().findFirst()
             .orElseGet(ProtocolFinalResponsePolicy::noOp)
-            .enforce(context);
+            .authorizeAndEnforce(context);
+    }
+
+    /** Whether an application installed an authoritative response policy. */
+    public static boolean isPolicyConfigured(
+        final ApplicationContext applicationContext) {
+        return !BeanFactoryUtils.beansOfTypeIncludingAncestors(
+            Objects.requireNonNull(applicationContext, "applicationContext"),
+            ProtocolFinalResponsePolicy.class).isEmpty();
     }
 }
