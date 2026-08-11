@@ -1,8 +1,8 @@
 package org.apereo.cas.web.support;
 
 import module java.base;
-import org.apereo.cas.protocol.ProtocolFinalResponseContext;
 import org.apereo.cas.protocol.ProtocolFinalResponseAuthorization;
+import org.apereo.cas.protocol.ProtocolFinalResponseContext;
 import org.apereo.cas.protocol.ProtocolFinalResponsePolicy;
 import lombok.val;
 import org.springframework.beans.factory.BeanFactoryUtils;
