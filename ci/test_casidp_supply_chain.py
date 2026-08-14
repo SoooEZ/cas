@@ -86,6 +86,16 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             candidate_block,
         )
 
+    def test_unsigned_repository_audit_is_portable_under_bash_nounset(self) -> None:
+        audit_block = self.source.split(
+            "audit_staging_repository() {", 1
+        )[1].split("\n}", 1)[0]
+        self.assertIn("local -a command=(", audit_block)
+        self.assertIn("python3 \"${AUDITOR}\" audit-repository", audit_block)
+        self.assertIn("command+=('--require-signatures')", audit_block)
+        self.assertIn('"${command[@]}"', audit_block)
+        self.assertNotIn("signature_argument", audit_block)
+
     def test_each_candidate_build_requires_the_live_redis_regression_service(
         self,
     ) -> None:

@@ -1811,23 +1811,26 @@ remove_mutable_maven_metadata() {
 audit_staging_repository() {
     local resolved_sbom=$1
     local require_signatures=${2:-false}
-    local -a signature_argument=()
+    # Keep the array non-empty: the Bash 3.2 shipped by macOS treats an
+    # expansion of an empty array as an unbound variable under `set -u`.
+    local -a command=(
+        python3 "${AUDITOR}" audit-repository
+        --repository "${STAGING_REPOSITORY}"
+        --release-dir "${RELEASE_DIR}"
+        --task-graph "${TASK_GRAPH}"
+        --group "${PROJECT_GROUP}"
+        --version "${PROJECT_VERSION}"
+        --fork-commit "${FORK_COMMIT}"
+        --upstream-version "${UPSTREAM_VERSION}"
+        --upstream-commit "${UPSTREAM_COMMIT}"
+        --fork-repository "${FORK_REPOSITORY}"
+        --package-repository "${PACKAGE_REPOSITORY}"
+        --resolved-sbom "${resolved_sbom}"
+    )
     if [[ ${require_signatures} == true ]]; then
-        signature_argument+=('--require-signatures')
+        command+=('--require-signatures')
     fi
-    python3 "${AUDITOR}" audit-repository \
-        --repository "${STAGING_REPOSITORY}" \
-        --release-dir "${RELEASE_DIR}" \
-        --task-graph "${TASK_GRAPH}" \
-        --group "${PROJECT_GROUP}" \
-        --version "${PROJECT_VERSION}" \
-        --fork-commit "${FORK_COMMIT}" \
-        --upstream-version "${UPSTREAM_VERSION}" \
-        --upstream-commit "${UPSTREAM_COMMIT}" \
-        --fork-repository "${FORK_REPOSITORY}" \
-        --package-repository "${PACKAGE_REPOSITORY}" \
-        --resolved-sbom "${resolved_sbom}" \
-        "${signature_argument[@]}"
+    "${command[@]}"
 }
 
 verify_signature_by_expected_signer() {
