@@ -125,6 +125,7 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             "gradle.lockfile",
             "core/cas-server-core-web/gradle.lockfile",
             "docs/cas-server-documentation-processor/gradle.lockfile",
+            "support/cas-server-support-palantir/gradle.lockfile",
             "support/cas-server-support-redis-ticket-registry/gradle.lockfile",
             "webapp/cas-server-webapp/gradle.lockfile",
             "webapp/cas-server-webapp-native/gradle.lockfile",
@@ -174,6 +175,12 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             self.source.replace("\n", "").replace(" ", ""),
         )
 
+    def test_palantir_release_runtime_is_a_required_lock_state(self) -> None:
+        self.assertIn(
+            '":support:cas-server-support-palantir":{"runtimeClasspath"}',
+            self.source.replace("\n", "").replace(" ", ""),
+        )
+
 
 class LockUpdateHelperTests(unittest.TestCase):
     @staticmethod
@@ -183,6 +190,7 @@ class LockUpdateHelperTests(unittest.TestCase):
             root / "gradle",
             root / "core/cas-server-core-web",
             root / "docs/cas-server-documentation-processor",
+            root / "support/cas-server-support-palantir",
             root / "support/cas-server-support-redis-ticket-registry",
             root / "webapp/cas-server-webapp",
             root / "webapp/cas-server-webapp-native",
@@ -224,6 +232,7 @@ for path in \\
     gradle.lockfile \\
     core/cas-server-core-web/gradle.lockfile \\
     docs/cas-server-documentation-processor/gradle.lockfile \\
+    support/cas-server-support-palantir/gradle.lockfile \\
     support/cas-server-support-redis-ticket-registry/gradle.lockfile \\
     webapp/cas-server-webapp/gradle.lockfile \\
     webapp/cas-server-webapp-native/gradle.lockfile \\
@@ -252,7 +261,9 @@ printf 'incidental-settings-lock\\n' > settings-gradle.lockfile
             self.assertEqual(2, len(graph_invocations))
             self.assertTrue(
                 all(
-                    ":support:cas-server-support-redis-ticket-registry:dependencies"
+                    ":support:cas-server-support-palantir:dependencies"
+                    in line
+                    and ":support:cas-server-support-redis-ticket-registry:dependencies"
                     in line
                     for line in graph_invocations
                 )
@@ -266,7 +277,7 @@ printf 'incidental-settings-lock\\n' > settings-gradle.lockfile
             )
             self.assertFalse((root / "settings-gradle.lockfile").exists())
             self.assertIn(
-                "All eight strict dependency locks are byte-stable.", result.stdout
+                "All nine strict dependency locks are byte-stable.", result.stdout
             )
 
     def test_preflight_rejects_lock_symlink_before_gradle_runs(self) -> None:
@@ -304,6 +315,7 @@ for path in \\
     gradle.lockfile \\
     core/cas-server-core-web/gradle.lockfile \\
     docs/cas-server-documentation-processor/gradle.lockfile \\
+    support/cas-server-support-palantir/gradle.lockfile \\
     support/cas-server-support-redis-ticket-registry/gradle.lockfile \\
     webapp/cas-server-webapp/gradle.lockfile \\
     webapp/cas-server-webapp-native/gradle.lockfile \\

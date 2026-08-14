@@ -104,16 +104,17 @@ supplies the checksum-pinned Corretto runtime above.
 `gradle/verification-metadata.xml` is therefore a reviewed release input; the
 workflow never generates or updates it.
 
-The documentation processor and exact core-web/Redis security-test graphs have
-unavoidable WebJars dependencies whose upstream metadata uses semantic-version
-ranges. The root aggregate Javadoc/SBOM graph, the assembled CAS web
-application, its native-image variant, and the deployable Jetty and Tomcat WAR
-variants also consume those ranges. In fork release mode, exactly the root
-project, `:core:cas-server-core-web`,
+The documentation processor, Palantir release-SBOM graph, and exact
+core-web/Redis security-test graphs have unavoidable WebJars dependencies whose
+upstream metadata uses semantic-version ranges. The root aggregate Javadoc/SBOM
+graph, the assembled CAS web application, its native-image variant, and the
+deployable Jetty and Tomcat WAR variants also consume those ranges. In fork
+release mode, exactly the root project, `:core:cas-server-core-web`,
 `:docs:cas-server-documentation-processor`,
+`:support:cas-server-support-palantir`,
 `:support:cas-server-support-redis-ticket-registry`,
-`:webapp:cas-server-webapp`, and
-`:webapp:cas-server-webapp-native`, `:webapp:cas-server-webapp-jetty`, and
+`:webapp:cas-server-webapp`, `:webapp:cas-server-webapp-native`,
+`:webapp:cas-server-webapp-jetty`, and
 `:webapp:cas-server-webapp-tomcat` therefore activate Gradle STRICT dependency
 locking; every other fork project continues to use
 `failOnNonReproducibleResolution()`. Their reviewed lockfiles are required
@@ -122,13 +123,14 @@ release inputs:
 - `gradle.lockfile`
 - `core/cas-server-core-web/gradle.lockfile`
 - `docs/cas-server-documentation-processor/gradle.lockfile`
+- `support/cas-server-support-palantir/gradle.lockfile`
 - `support/cas-server-support-redis-ticket-registry/gradle.lockfile`
 - `webapp/cas-server-webapp/gradle.lockfile`
 - `webapp/cas-server-webapp-native/gradle.lockfile`
 - `webapp/cas-server-webapp-jetty/gradle.lockfile`
 - `webapp/cas-server-webapp-tomcat/gradle.lockfile`
 
-The release driver audits exactly those eight paths and rejects a missing,
+The release driver audits exactly those nine paths and rejects a missing,
 non-regular, or symbolic-link lockfile; non-UTF-8 or non-LF bytes; a missing
 final newline; non-canonical Gradle headers or `empty=` footers; duplicate GAVs
 or configurations; empty versions; snapshots; and dynamic/range selectors. It
@@ -141,9 +143,9 @@ The `--write-locks` bootstrap selects the same reproducible dependency and
 plugin graph as `-DcasIdpForkPublish=true`, while publication repositories,
 credentials, and signing remain controlled only by that explicit system
 property. Gradle writes an incidental, settings-scoped
-`settings-gradle.lockfile`; it is outside the reviewed eight-graph boundary
+`settings-gradle.lockfile`; it is outside the reviewed nine-graph boundary
 and must not be committed. The canonical update helper removes it after each
-pass, resolves all eight graphs together plus the root CycloneDX plugin's
+pass, resolves all nine graphs together plus the root CycloneDX plugin's
 plugin-only `cyclonedxBom` configuration with strict dependency verification,
 disables build/configuration caches and Java toolchain auto-download, then
 generates the locks a second time and requires byte-identical output. Before
@@ -157,7 +159,7 @@ pass if those reviewed bytes changed. Run only:
 
 The fourth comment line in each generated lockfile is Gradle's project-specific
 shorthand. It is retained as the canonical generated-file header for auditing,
-but maintainers must use the helper above so all eight lock states are updated
+but maintainers must use the helper above so all nine lock states are updated
 and compared as one reviewed change, including the plugin-only SBOM
 configuration in the root lock. The helper resolves that configuration directly;
 it does not generate 426 module BOMs, which remains the formal candidate
@@ -264,7 +266,7 @@ tag. Treat any strict dependency-lock failure the same way: update the
 affected lockfile only in the separate review described above. Do not weaken
 strict mode, generate locks in CI, or enable automatic toolchain downloads.
 The driver rejects full or selective lock updates and dependency-verification
-metadata/key generation. It also hashes all eight lockfiles plus
+metadata/key generation. It also hashes all nine lockfiles plus
 `gradle/verification-metadata.xml` before the first Gradle invocation and
 requires the same combined byte identity after every build, task-graph, and
 publication invocation.

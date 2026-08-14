@@ -29,6 +29,8 @@ readonly -a STRICT_DEPENDENCY_LOCKS=(
     ':core:cas-server-core-web'
     "${ROOT_DIR}/docs/cas-server-documentation-processor/gradle.lockfile"
     ':docs:cas-server-documentation-processor'
+    "${ROOT_DIR}/support/cas-server-support-palantir/gradle.lockfile"
+    ':support:cas-server-support-palantir'
     "${ROOT_DIR}/support/cas-server-support-redis-ticket-registry/gradle.lockfile"
     ':support:cas-server-support-redis-ticket-registry'
     "${ROOT_DIR}/webapp/cas-server-webapp/gradle.lockfile"
@@ -244,8 +246,8 @@ import stat
 import sys
 
 arguments = sys.argv[1:]
-if len(arguments) != 16 or len(arguments) % 2:
-    raise SystemExit("Unsafe strict dependency-lock boundary: expected exactly eight locks")
+if len(arguments) != 18 or len(arguments) % 2:
+    raise SystemExit("Unsafe strict dependency-lock boundary: expected exactly nine locks")
 
 lock_specs = [
     (pathlib.Path(arguments[index]), arguments[index + 1])
@@ -260,6 +262,10 @@ expected_specs = [
     (
         pathlib.Path("docs/cas-server-documentation-processor/gradle.lockfile"),
         ":docs:cas-server-documentation-processor",
+    ),
+    (
+        pathlib.Path("support/cas-server-support-palantir/gradle.lockfile"),
+        ":support:cas-server-support-palantir",
     ),
     (
         pathlib.Path("support/cas-server-support-redis-ticket-registry/gradle.lockfile"),
@@ -389,6 +395,7 @@ for lockfile, project in lock_specs:
     required_configurations = {
         ":": {"aggregateJavadocClasspath", "cyclonedxBom"},
         ":core:cas-server-core-web": {"testRuntimeClasspath"},
+        ":support:cas-server-support-palantir": {"runtimeClasspath"},
         ":support:cas-server-support-redis-ticket-registry": {
             "testRuntimeClasspath"
         },
@@ -1616,6 +1623,7 @@ supply_chain_input_digest() {
         gradle.lockfile \
         core/cas-server-core-web/gradle.lockfile \
         docs/cas-server-documentation-processor/gradle.lockfile \
+        support/cas-server-support-palantir/gradle.lockfile \
         support/cas-server-support-redis-ticket-registry/gradle.lockfile \
         webapp/cas-server-webapp/gradle.lockfile \
         webapp/cas-server-webapp-native/gradle.lockfile \
