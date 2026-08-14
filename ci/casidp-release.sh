@@ -29,6 +29,8 @@ readonly -a STRICT_DEPENDENCY_LOCKS=(
     ':core:cas-server-core-web'
     "${ROOT_DIR}/docs/cas-server-documentation-processor/gradle.lockfile"
     ':docs:cas-server-documentation-processor'
+    "${ROOT_DIR}/support/cas-server-support-redis-ticket-registry/gradle.lockfile"
+    ':support:cas-server-support-redis-ticket-registry'
     "${ROOT_DIR}/webapp/cas-server-webapp/gradle.lockfile"
     ':webapp:cas-server-webapp'
     "${ROOT_DIR}/webapp/cas-server-webapp-native/gradle.lockfile"
@@ -242,8 +244,8 @@ import stat
 import sys
 
 arguments = sys.argv[1:]
-if len(arguments) != 14 or len(arguments) % 2:
-    raise SystemExit("Unsafe strict dependency-lock boundary: expected exactly seven locks")
+if len(arguments) != 16 or len(arguments) % 2:
+    raise SystemExit("Unsafe strict dependency-lock boundary: expected exactly eight locks")
 
 lock_specs = [
     (pathlib.Path(arguments[index]), arguments[index + 1])
@@ -258,6 +260,10 @@ expected_specs = [
     (
         pathlib.Path("docs/cas-server-documentation-processor/gradle.lockfile"),
         ":docs:cas-server-documentation-processor",
+    ),
+    (
+        pathlib.Path("support/cas-server-support-redis-ticket-registry/gradle.lockfile"),
+        ":support:cas-server-support-redis-ticket-registry",
     ),
     (
         pathlib.Path("webapp/cas-server-webapp/gradle.lockfile"),
@@ -383,6 +389,9 @@ for lockfile, project in lock_specs:
     required_configurations = {
         ":": {"aggregateJavadocClasspath", "cyclonedxBom"},
         ":core:cas-server-core-web": {"testRuntimeClasspath"},
+        ":support:cas-server-support-redis-ticket-registry": {
+            "testRuntimeClasspath"
+        },
     }.get(project, set())
     missing_configurations = required_configurations - configurations_seen
     if missing_configurations:
@@ -1558,6 +1567,35 @@ staging_url() {
     python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "${STAGING_REPOSITORY}"
 }
 
+require_redis_test_service() {
+    python3 - <<'PY'
+import socket
+
+endpoint = ("127.0.0.1", 6379)
+try:
+    with socket.create_connection(endpoint, timeout=2) as connection:
+        connection.settimeout(2)
+        connection.sendall(b"*1\r\n$4\r\nPING\r\n")
+        response = bytearray()
+        while not response.endswith(b"\r\n") and len(response) <= 64:
+            chunk = connection.recv(64)
+            if not chunk:
+                break
+            response.extend(chunk)
+except OSError as error:
+    raise SystemExit(
+        "CAS-IDP release requires the pinned Redis regression service on "
+        f"127.0.0.1:6379: {error}"
+    ) from None
+if bytes(response) != b"+PONG\r\n":
+    raise SystemExit(
+        "CAS-IDP release Redis regression service returned an invalid PING "
+        f"response: {bytes(response)!r}"
+    )
+print("Verified Redis regression service on 127.0.0.1:6379.")
+PY
+}
+
 readonly GRADLE_COMMON_ARGUMENTS=(
     '--no-daemon'
     '--no-build-cache'
@@ -1578,6 +1616,7 @@ supply_chain_input_digest() {
         gradle.lockfile \
         core/cas-server-core-web/gradle.lockfile \
         docs/cas-server-documentation-processor/gradle.lockfile \
+        support/cas-server-support-redis-ticket-registry/gradle.lockfile \
         webapp/cas-server-webapp/gradle.lockfile \
         webapp/cas-server-webapp-native/gradle.lockfile \
         webapp/cas-server-webapp-jetty/gradle.lockfile \
@@ -2003,6 +2042,7 @@ publish_existing_candidate() {
 }
 
 build_unsigned_candidate_once() {
+    require_redis_test_service
     reset_release_directory
     [[ ! -e ${GRADLE_USER_HOME} ]] \
         || die "Candidate Gradle user home is not fresh: ${GRADLE_USER_HOME}"

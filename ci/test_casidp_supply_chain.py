@@ -86,6 +86,24 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             candidate_block,
         )
 
+    def test_each_candidate_build_requires_the_live_redis_regression_service(
+        self,
+    ) -> None:
+        candidate_block = self.source.split(
+            "build_unsigned_candidate_once() {", 1
+        )[1].split("\n}", 1)[0]
+        self.assertEqual(1, candidate_block.count("require_redis_test_service"))
+        self.assertLess(
+            candidate_block.index("require_redis_test_service"),
+            candidate_block.index("reset_release_directory"),
+        )
+        redis_preflight = self.source.split(
+            "require_redis_test_service() {", 1
+        )[1].split("\n}", 1)[0]
+        self.assertIn('endpoint = ("127.0.0.1", 6379)', redis_preflight)
+        self.assertIn('connection.sendall(b"*1\\r\\n$4\\r\\nPING\\r\\n")', redis_preflight)
+        self.assertIn('bytes(response) != b"+PONG\\r\\n"', redis_preflight)
+
     def test_every_gradle_phase_rechecks_dependency_trust_inputs(self) -> None:
         self.assertEqual(
             5,
@@ -107,6 +125,7 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             "gradle.lockfile",
             "core/cas-server-core-web/gradle.lockfile",
             "docs/cas-server-documentation-processor/gradle.lockfile",
+            "support/cas-server-support-redis-ticket-registry/gradle.lockfile",
             "webapp/cas-server-webapp/gradle.lockfile",
             "webapp/cas-server-webapp-native/gradle.lockfile",
             "webapp/cas-server-webapp-jetty/gradle.lockfile",
@@ -148,6 +167,13 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             self.source,
         )
 
+    def test_exact_redis_security_runtime_is_a_required_lock_state(self) -> None:
+        self.assertIn(
+            '":support:cas-server-support-redis-ticket-registry":'
+            '{"testRuntimeClasspath"}',
+            self.source.replace("\n", "").replace(" ", ""),
+        )
+
 
 class LockUpdateHelperTests(unittest.TestCase):
     @staticmethod
@@ -157,6 +183,7 @@ class LockUpdateHelperTests(unittest.TestCase):
             root / "gradle",
             root / "core/cas-server-core-web",
             root / "docs/cas-server-documentation-processor",
+            root / "support/cas-server-support-redis-ticket-registry",
             root / "webapp/cas-server-webapp",
             root / "webapp/cas-server-webapp-native",
             root / "webapp/cas-server-webapp-jetty",
@@ -197,6 +224,7 @@ for path in \\
     gradle.lockfile \\
     core/cas-server-core-web/gradle.lockfile \\
     docs/cas-server-documentation-processor/gradle.lockfile \\
+    support/cas-server-support-redis-ticket-registry/gradle.lockfile \\
     webapp/cas-server-webapp/gradle.lockfile \\
     webapp/cas-server-webapp-native/gradle.lockfile \\
     webapp/cas-server-webapp-jetty/gradle.lockfile \\
@@ -217,7 +245,18 @@ printf 'incidental-settings-lock\\n' > settings-gradle.lockfile
             sbom_invocations = [
                 line for line in invocations if "cyclonedxBom" in line
             ]
+            graph_invocations = [
+                line for line in invocations if "cyclonedxBom" not in line
+            ]
             self.assertEqual(2, len(sbom_invocations))
+            self.assertEqual(2, len(graph_invocations))
+            self.assertTrue(
+                all(
+                    ":support:cas-server-support-redis-ticket-registry:dependencies"
+                    in line
+                    for line in graph_invocations
+                )
+            )
             self.assertTrue(
                 all(
                     "-DcasIdpResolveCycloneDxLock=true" in line
@@ -227,7 +266,7 @@ printf 'incidental-settings-lock\\n' > settings-gradle.lockfile
             )
             self.assertFalse((root / "settings-gradle.lockfile").exists())
             self.assertIn(
-                "All seven strict dependency locks are byte-stable.", result.stdout
+                "All eight strict dependency locks are byte-stable.", result.stdout
             )
 
     def test_preflight_rejects_lock_symlink_before_gradle_runs(self) -> None:
@@ -265,6 +304,7 @@ for path in \\
     gradle.lockfile \\
     core/cas-server-core-web/gradle.lockfile \\
     docs/cas-server-documentation-processor/gradle.lockfile \\
+    support/cas-server-support-redis-ticket-registry/gradle.lockfile \\
     webapp/cas-server-webapp/gradle.lockfile \\
     webapp/cas-server-webapp-native/gradle.lockfile \\
     webapp/cas-server-webapp-jetty/gradle.lockfile \\

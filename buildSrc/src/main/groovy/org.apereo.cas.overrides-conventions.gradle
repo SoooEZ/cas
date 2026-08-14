@@ -5,6 +5,7 @@ def casIdpLockedDependencyGraph = casIdpReproducibleMode && project.path in [
     ':',
     ':core:cas-server-core-web',
     ':docs:cas-server-documentation-processor',
+    ':support:cas-server-support-redis-ticket-registry',
     ':webapp:cas-server-webapp',
     ':webapp:cas-server-webapp-native',
     ':webapp:cas-server-webapp-jetty',
