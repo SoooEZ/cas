@@ -1731,6 +1731,7 @@ build_candidate() {
         --tests org.apereo.cas.web.flow.actions.RedirectToServiceActionTests \
         --tests org.apereo.cas.web.flow.SendTicketGrantingTicketActionTests \
         --tests org.apereo.cas.web.flow.FetchTicketGrantingTicketActionTests \
+        --tests org.apereo.cas.ticket.registry.key.DigestingRedisLockRegistryTests \
         --tests org.apereo.cas.ticket.registry.RedisTicketRegistryWriteInterceptorTests \
         --tests org.apereo.cas.ticket.registry.sub.DefaultRedisTicketRegistryMessageListenerTests \
         --parallel
@@ -1743,14 +1744,15 @@ build_candidate() {
         --result 'core/cas-server-core-cookie-api/build/test-results/testCookie/TEST-org.apereo.cas.web.support.mgmr.EncryptedCookieValueManagerTests.xml:5' \
         --result 'core/cas-server-core-cookie/build/test-results/testCookie/TEST-org.apereo.cas.web.support.CookieRetrievingCookieGeneratorTests.xml:14' \
         --result 'core/cas-server-core-services-authentication/build/test-results/testAuthentication/TEST-org.apereo.cas.authentication.principal.DefaultResponseTests.xml:3' \
-        --result 'core/cas-server-core-tickets-api/build/test-results/testTickets/TEST-org.apereo.cas.ticket.registry.AbstractTicketRegistryIssuancePolicyTests.xml:17' \
+        --result 'core/cas-server-core-tickets-api/build/test-results/testTickets/TEST-org.apereo.cas.ticket.registry.AbstractTicketRegistryIssuancePolicyTests.xml:18' \
         --result 'core/cas-server-core-web/build/test-results/testWeb/TEST-org.apereo.cas.config.CasCoreWebFinalResponsePolicyTests.xml:2' \
         --result 'core/cas-server-core-web/build/test-results/testUtility/TEST-org.apereo.cas.web.support.WebUtilsTests.xml:6' \
         --result 'core/cas-server-core-webflow-api/build/test-results/testWebflowActions/TEST-org.apereo.cas.web.flow.actions.CasProtocolFinalResponseDeliveryBuilderTests.xml:20' \
-        --result 'core/cas-server-core-webflow/build/test-results/testWebflowAuthenticationActions/TEST-org.apereo.cas.web.flow.actions.BrowserStorageActionTests.xml:9' \
+        --result 'core/cas-server-core-webflow/build/test-results/testWebflowAuthenticationActions/TEST-org.apereo.cas.web.flow.actions.BrowserStorageActionTests.xml:10' \
         --result 'core/cas-server-core-webflow/build/test-results/testWebflowServiceActions/TEST-org.apereo.cas.web.flow.actions.RedirectToServiceActionTests.xml:5' \
         --result 'support/cas-server-support-actions/build/test-results/testWebflowActions/TEST-org.apereo.cas.web.flow.SendTicketGrantingTicketActionTests.xml:4' \
         --result 'support/cas-server-support-actions/build/test-results/testWebflowActions/TEST-org.apereo.cas.web.flow.FetchTicketGrantingTicketActionTests.xml:1' \
+        --result 'support/cas-server-support-redis-ticket-registry/build/test-results/testRedis/TEST-org.apereo.cas.ticket.registry.key.DigestingRedisLockRegistryTests.xml:1' \
         --result 'support/cas-server-support-redis-ticket-registry/build/test-results/testRedis/TEST-org.apereo.cas.ticket.registry.RedisTicketRegistryWriteInterceptorTests.xml:73' \
         --result 'support/cas-server-support-redis-ticket-registry/build/test-results/testRedis/TEST-org.apereo.cas.ticket.registry.sub.DefaultRedisTicketRegistryMessageListenerTests.xml:2'
 }

@@ -336,10 +336,12 @@ public abstract class AbstractTicketRegistry implements TicketRegistry {
             val provider = applicationContext != null
                 ? applicationContext.getBeanProvider(TicketIssuancePolicy.class)
                 : null;
-            policy = provider != null
-                ? provider.getIfAvailable(TicketIssuancePolicy::noOp)
-                : TicketIssuancePolicy.noOp();
-            ticketIssuancePolicy = policy;
+            policy = provider != null ? provider.getIfAvailable() : null;
+            if (policy != null) {
+                ticketIssuancePolicy = policy;
+            } else {
+                policy = TicketIssuancePolicy.noOp();
+            }
         }
         return policy;
     }

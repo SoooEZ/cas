@@ -44,6 +44,31 @@ class AbstractTicketRegistryIssuancePolicyTests {
     }
 
     @Test
+    void verifyLatePolicyRegistrationReplacesTransientNoOpFallback()
+        throws Throwable {
+        try (val context = new GenericApplicationContext()) {
+            context.refresh();
+            val registry = new MemoryTicketRegistry(context);
+            val unmanaged = newTicket("TST-before-policy");
+
+            assertSame(unmanaged, registry.addTicket(unmanaged));
+            assertTrue(TicketIssuanceMetadata.from(unmanaged).isEmpty());
+
+            val policy = new TestIssuancePolicy();
+            context.getBeanFactory().registerSingleton(
+                TicketIssuancePolicy.BEAN_NAME, policy);
+            val managed = newTicket("TST-after-policy");
+
+            assertSame(managed, registry.addTicket(managed));
+            assertEquals(policy.metadata,
+                TicketIssuanceMetadata.from(managed).orElseThrow());
+            assertNull(registry.getTicket(managed.getId()));
+            assertEquals(List.of(TicketIssuancePolicy.Operation.ADD),
+                policy.operations);
+        }
+    }
+
+    @Test
     void verifyAuthoritativeSourceReadUsesDedicatedStorageSeam() throws Throwable {
         try (val context = new GenericApplicationContext()) {
             context.refresh();

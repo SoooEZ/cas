@@ -76,6 +76,23 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             build_block,
         )
 
+    def test_redis_lock_key_privacy_regression_is_in_exact_inventory(self) -> None:
+        build_block = self.source.split("build_candidate() {", 1)[1].split(
+            "\nnormalize_resolved_sbom() {", 1
+        )[0]
+        self.assertEqual(
+            1,
+            build_block.count(
+                "--tests org.apereo.cas.ticket.registry.key."
+                "DigestingRedisLockRegistryTests \\\n"
+            ),
+        )
+        self.assertIn(
+            "testRedis/TEST-org.apereo.cas.ticket.registry.key."
+            "DigestingRedisLockRegistryTests.xml:1",
+            build_block,
+        )
+
     def test_mutable_maven_metadata_is_removed_before_repository_audit(self) -> None:
         candidate_block = self.source.split(
             "build_unsigned_candidate_once() {", 1

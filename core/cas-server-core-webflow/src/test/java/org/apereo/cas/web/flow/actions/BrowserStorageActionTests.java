@@ -2,8 +2,10 @@ package org.apereo.cas.web.flow.actions;
 
 import module java.base;
 import org.apereo.cas.mock.MockTicketGrantingTicket;
+import org.apereo.cas.protocol.ProtocolFinalResponseDecision;
 import org.apereo.cas.protocol.ProtocolFinalResponseDelivery;
 import org.apereo.cas.protocol.ProtocolFinalResponseLogicalBinding;
+import org.apereo.cas.protocol.ProtocolFinalResponsePolicy;
 import org.apereo.cas.protocol.ProtocolFinalResponsePreparedDelivery;
 import org.apereo.cas.ticket.TicketGrantingTicket;
 import org.apereo.cas.ticket.registry.TicketRegistry;
@@ -25,6 +27,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.webflow.core.collection.LocalAttributeMap;
 import org.springframework.webflow.execution.Action;
@@ -263,6 +266,32 @@ class BrowserStorageActionTests extends BaseWebflowConfigurerTests {
             () -> writeSessionStorageAction.execute(context));
         assertFalse(context.getFlowScope().contains(
             BrowserStorage.PARAMETER_BROWSER_STORAGE));
+    }
+
+    @Test
+    void verifyConfiguredPolicyRejectsLegacyBrowserStorageDisclosure()
+        throws Exception {
+        try (val policyApplicationContext = new GenericApplicationContext()) {
+            policyApplicationContext.registerBean(
+                ProtocolFinalResponsePolicy.BEAN_NAME,
+                ProtocolFinalResponsePolicy.class,
+                () -> ignored -> ProtocolFinalResponseDecision.permit());
+            policyApplicationContext.refresh();
+            val context = MockRequestContext.create(policyApplicationContext)
+                .withUserAgent("Firefox");
+            context.setCurrentEvent(new Event(
+                this,
+                CasWebflowConstants.TRANSITION_ID_SUCCESS,
+                new LocalAttributeMap<>(
+                    TicketGrantingTicket.class.getName(),
+                    "TGT-must-not-be-disclosed")));
+
+            assertThrows(
+                IllegalStateException.class,
+                () -> writeSessionStorageAction.execute(context));
+            assertFalse(context.getFlowScope().contains(
+                BrowserStorage.PARAMETER_BROWSER_STORAGE));
+        }
     }
 
     @Test

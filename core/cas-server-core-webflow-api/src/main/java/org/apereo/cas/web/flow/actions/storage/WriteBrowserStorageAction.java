@@ -8,6 +8,7 @@ import org.apereo.cas.web.BrowserStorage;
 import org.apereo.cas.web.DefaultBrowserStorage;
 import org.apereo.cas.web.cookie.CasCookieBuilder;
 import org.apereo.cas.web.flow.actions.CasProtocolFinalResponseDeliveryBuilder;
+import org.apereo.cas.web.support.ProtocolFinalResponsePolicyEnforcer;
 import org.apereo.cas.web.support.WebUtils;
 import lombok.Setter;
 import lombok.val;
@@ -37,6 +38,12 @@ public class WriteBrowserStorageAction extends BaseBrowserStorageAction {
             ProtocolFinalResponsePreparedDelivery.class);
         val ticketGrantingTicket = eventAttributes.get(
             TicketGrantingTicket.class.getName(), String.class);
+        if (preparedDelivery == null
+            && ProtocolFinalResponsePolicyEnforcer.isPolicyConfigured(
+                requestContext.getActiveFlow().getApplicationContext())) {
+            throw new IllegalStateException(
+                "Browser-storage response is missing its authorized delivery");
+        }
         val outputValue = preparedDelivery == null
             ? buildLegacyOutput(requestContext, ticketGrantingTicket)
             : decodeAuthorizedOutput(preparedDelivery, storageType);

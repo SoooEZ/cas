@@ -18,6 +18,7 @@ import org.apereo.cas.ticket.registry.RedisTicketRegistry;
 import org.apereo.cas.ticket.registry.RedisTicketRegistryCacheEndpoint;
 import org.apereo.cas.ticket.registry.TicketRegistry;
 import org.apereo.cas.ticket.registry.key.DefaultRedisKeyGenerator;
+import org.apereo.cas.ticket.registry.key.DigestingRedisLockRegistry;
 import org.apereo.cas.ticket.registry.key.RedisKeyGenerator;
 import org.apereo.cas.ticket.registry.key.RedisKeyGeneratorFactory;
 import org.apereo.cas.ticket.registry.pub.DefaultRedisTicketRegistryMessagePublisher;
@@ -325,7 +326,9 @@ public class CasRedisTicketRegistryAutoConfiguration {
             final LockRegistry casTicketRegistryRedisLockRegistry) {
             return BeanSupplier.of(LockRepository.class)
                 .when(CONDITION_LOCKING.given(applicationContext.getEnvironment()))
-                .supply(() -> new DefaultLockRepository(casTicketRegistryRedisLockRegistry))
+                .supply(() -> new DefaultLockRepository(
+                    new DigestingRedisLockRegistry(
+                        casTicketRegistryRedisLockRegistry)))
                 .otherwise(LockRepository::noOp)
                 .get();
         }

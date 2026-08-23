@@ -105,3 +105,12 @@ expired keys are usually removed quickly, but deletion is not a continuous full 
 This ticket registry implementation automatically supports [distributed locking](../ticketing/Ticket-Registry-Locking.html).
 The schemas and structures that track locking operations should be automatically created by CAS using
 [Spring Integration](https://spring.io/projects/spring-integration) Redis support.
+
+CAS-IDP fork builds use a versioned, domain-separated SHA-256 digest for the
+ticket portion of Redis lock keys so raw TGT and ST identifiers are not exposed
+in the Redis keyspace. This changes the distributed-lock namespace. Do not run
+a raw-lock-key build and a digest-lock-key build against the same writable
+ticket Redis during a rolling replacement: the two versions would not contend
+for the same lock, including the lock that protects single-use service-ticket
+validation. Stop and drain every old node before starting the new version, or
+use an isolated ticket Redis for a blue-green cutover.
