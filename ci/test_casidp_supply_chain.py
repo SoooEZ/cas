@@ -183,6 +183,24 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             common_arguments,
         )
 
+    def test_immutable_source_inputs_do_not_mask_command_failures(self) -> None:
+        for variable in (
+            "PROJECT_GROUP",
+            "PROJECT_VERSION",
+            "UPSTREAM_VERSION",
+            "UPSTREAM_COMMIT",
+            "FORK_REPOSITORY",
+            "FORK_COMMIT",
+        ):
+            self.assertRegex(
+                self.source,
+                rf"(?m)^{variable}=\$\(.+\)\nreadonly {variable}$",
+            )
+        self.assertNotRegex(
+            self.source,
+            r"(?m)^readonly [A-Z][A-Z0-9_]*=\$\(",
+        )
+
     def test_root_sbom_configuration_is_a_required_lock_state(self) -> None:
         self.assertIn(
             '":": {"aggregateJavadocClasspath", "cyclonedxBom"}',

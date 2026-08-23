@@ -157,12 +157,18 @@ read_property() {
     printf '%s' "${value}"
 }
 
-readonly PROJECT_GROUP=$(read_property 'group')
-readonly PROJECT_VERSION=$(read_property 'version')
-readonly UPSTREAM_VERSION=$(read_property 'casIdpUpstreamVersion')
-readonly UPSTREAM_COMMIT=$(read_property 'casIdpUpstreamCommit')
-readonly FORK_REPOSITORY=$(read_property 'casIdpForkRepository')
-readonly FORK_COMMIT=$(git rev-parse --verify HEAD^{commit})
+PROJECT_GROUP=$(read_property 'group')
+readonly PROJECT_GROUP
+PROJECT_VERSION=$(read_property 'version')
+readonly PROJECT_VERSION
+UPSTREAM_VERSION=$(read_property 'casIdpUpstreamVersion')
+readonly UPSTREAM_VERSION
+UPSTREAM_COMMIT=$(read_property 'casIdpUpstreamCommit')
+readonly UPSTREAM_COMMIT
+FORK_REPOSITORY=$(read_property 'casIdpForkRepository')
+readonly FORK_REPOSITORY
+FORK_COMMIT=$(git rev-parse --verify 'HEAD^{commit}')
+readonly FORK_COMMIT
 readonly RELEASE_TAG="v${PROJECT_VERSION}"
 
 normalize_fingerprint() {
