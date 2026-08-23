@@ -191,6 +191,32 @@ class RedisServerTicketRegistryTests {
             assertNull(redisTicketRegistryCache.getIfPresent(
                 registry.digestIdentifier(ticketId)));
         }
+
+        @RepeatedTest(2)
+        void verifyDeleteTicketsForRemovesTicketGrantingSessionIndexMembers() throws Throwable {
+            val principalId = UUID.randomUUID().toString();
+            val authentication = CoreAuthenticationTestUtils.getAuthentication(principalId);
+            val tgtId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            val tgt = new TicketGrantingTicketImpl(
+                tgtId, authentication, NeverExpiresExpirationPolicy.INSTANCE);
+            val pgtId = new ProxyGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(ProxyGrantingTicket.PROXY_GRANTING_TICKET_PREFIX);
+            val pgt = new ProxyGrantingTicketImpl(
+                pgtId, authentication, NeverExpiresExpirationPolicy.INSTANCE);
+            val registry = getNewTicketRegistry();
+            registry.addTicket(tgt);
+            registry.addTicket(pgt);
+
+            assertEquals(2, registry.countSessionsFor(principalId));
+            assertEquals(2, registry.deleteTicketsFor(principalId));
+            assertEquals(0, registry.countSessionsFor(principalId));
+            assertNull(registry.getTicket(tgtId));
+            assertNull(registry.getTicket(pgtId));
+
+            assertEquals(0, registry.deleteTicketsFor(principalId));
+            assertEquals(0, registry.countSessionsFor(principalId));
+        }
     }
 
     @Nested

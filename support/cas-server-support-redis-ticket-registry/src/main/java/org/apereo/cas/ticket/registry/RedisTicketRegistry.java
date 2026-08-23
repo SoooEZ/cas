@@ -39,6 +39,7 @@ import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.data.redis.connection.DataType;
+import org.springframework.data.redis.connection.ReturnType;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisKeyValueAdapter;
 import org.springframework.data.redis.core.ScanOptions;
@@ -61,6 +62,45 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
 public class RedisTicketRegistry extends AbstractTicketRegistry implements Cleanable {
 
     private static final String SEARCH_INDEX_NAME = RedisTicketDocument.class.getSimpleName() + "Index";
+
+    private static final int PRINCIPAL_DELETE_CHUNK_SIZE = 100;
+
+    /**
+     * Atomically removes one bounded batch of principal tickets and their
+     * session-index members. The ticket principal is checked again at the
+     * mutation linearization point so a concurrently replaced key belonging to
+     * another principal is never removed. Session members are removed even
+     * when their ticket has already disappeared.
+     *
+     * <p>This multi-key script follows the Redis ticket registry's existing
+     * single-primary/Sentinel deployment contract. Redis Cluster would require
+     * all keys to share a hash slot and is not supported by this key schema.</p>
+     */
+    private static final byte[] DELETE_PRINCIPAL_TICKET_BATCH_SCRIPT = """
+        local function keytype(key)
+          local value = redis.call('TYPE', key)
+          if type(value) == 'table' then return value.ok end
+          return value
+        end
+        local session_type = keytype(KEYS[1])
+        if session_type ~= 'none' and session_type ~= 'zset' then
+          return redis.error_reply('CAS principal session index has wrong type')
+        end
+        for index = 2, #KEYS do
+          local ticket_type = keytype(KEYS[index])
+          if ticket_type ~= 'none' and ticket_type ~= 'hash' then
+            return redis.error_reply('CAS principal ticket has wrong type')
+          end
+        end
+        local deleted = 0
+        for index = 2, #KEYS do
+          if redis.call('HGET', KEYS[index], ARGV[2]) == ARGV[1] then
+            deleted = deleted + redis.call('UNLINK', KEYS[index])
+          end
+          redis.call('ZREM', KEYS[1], ARGV[index + 1])
+        end
+        return deleted
+        """.getBytes(StandardCharsets.UTF_8);
 
     private final CasRedisTemplates casRedisTemplates;
 
@@ -320,7 +360,6 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
     @Override
     public long deleteTicketsFor(final String principalId) {
         val window = 1000;
-        val delChunk = 1000;
         var deleted = 0L;
         val target = digestIdentifier(principalId);
         val principalFieldSerializer = new StringRedisSerializer();
@@ -337,21 +376,20 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
             while (cursor.hasNext()) {
                 windowKeys.add(cursor.next());
                 if (windowKeys.size() >= window) {
-                    deleted += deleteTicketsForPrincipal(target, principalFieldSerializer, windowKeys, delChunk);
+                    deleted += deleteTicketsForPrincipal(target, principalFieldSerializer, windowKeys);
                     windowKeys.clear();
                 }
             }
             if (!windowKeys.isEmpty()) {
-                deleted += deleteTicketsForPrincipal(target, principalFieldSerializer, windowKeys, delChunk);
+                deleted += deleteTicketsForPrincipal(target, principalFieldSerializer, windowKeys);
             }
         }
         return deleted;
     }
 
     private long deleteTicketsForPrincipal(final String target,
-                                           final RedisSerializer principalFieldSerializer,
-                                           final List<String> windowKeys,
-                                           final int delChunk) {
+                                           final RedisSerializer<String> principalFieldSerializer,
+                                           final List<String> windowKeys) {
         val principals = casRedisTemplates.getTicketsRedisTemplate()
             .executePipelined((RedisCallback<Object>) conn -> {
                 for (val key : windowKeys) {
@@ -369,34 +407,54 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
                 val compositeKey = RedisKeyGenerator.parse(redisKey);
                 val redisKeyGenerator = redisKeyGeneratorFactory.getRedisKeyGenerator(compositeKey.getPrefix()).orElseThrow();
                 val cacheKey = redisKeyGenerator.rawKey(redisKey);
-                toDelete.add(new RedisTicketToDelete(redisKey, cacheKey));
+                toDelete.add(new RedisTicketToDelete(redisKey, cacheKey, compositeKey.getId()));
             }
         }
 
         var deleted = 0L;
-        for (var i = 0; i < toDelete.size(); i += delChunk) {
-            val end = Math.min(i + delChunk, toDelete.size());
+        for (var i = 0; i < toDelete.size(); i += PRINCIPAL_DELETE_CHUNK_SIZE) {
+            val end = Math.min(i + PRINCIPAL_DELETE_CHUNK_SIZE, toDelete.size());
             val ticketChunk = toDelete.subList(i, end);
-            val chunk = ticketChunk
-                .stream()
-                .map(ticket -> ticket.redisKey().getBytes(StandardCharsets.UTF_8))
-                .toArray(byte[][]::new);
-
-            val result = casRedisTemplates.getTicketsRedisTemplate()
-                .executePipelined((RedisCallback<Object>) conn -> {
-                    conn.keyCommands().unlink(chunk);
-                    return null;
-                });
-
-            if (!result.isEmpty() && result.getFirst() instanceof final Long count) {
-                deleted += count;
-            }
+            deleted += deletePrincipalTicketBatch(target, principalFieldSerializer, ticketChunk);
             ticketChunk.forEach(ticketToDelete -> {
                 ticketCache.ifAvailable(cache -> cache.invalidate(ticketToDelete.cacheKey()));
                 messagePublisher.ifAvailable(publisher -> publisher.deleteByKey(ticketToDelete.redisKey()));
             });
         }
         return deleted;
+    }
+
+    private long deletePrincipalTicketBatch(final String target,
+                                            final RedisSerializer<String> principalFieldSerializer,
+                                            final List<RedisTicketToDelete> ticketChunk) {
+        val principalGenerator = redisKeyGeneratorFactory
+            .getRedisKeyGenerator(Principal.class.getName())
+            .orElseThrow();
+        val principalKey = principalGenerator.forId(target);
+        val sessionValueSerializer = (RedisSerializer<String>)
+            casRedisTemplates.getSessionsRedisTemplate().getValueSerializer();
+        val keysAndArguments = new ArrayList<byte[]>((ticketChunk.size() * 2) + 3);
+        keysAndArguments.add(principalKey.getBytes(StandardCharsets.UTF_8));
+        ticketChunk.stream()
+            .map(RedisTicketToDelete::redisKey)
+            .map(key -> key.getBytes(StandardCharsets.UTF_8))
+            .forEach(keysAndArguments::add);
+        keysAndArguments.add(Objects.requireNonNull(principalFieldSerializer.serialize(target)));
+        keysAndArguments.add(Objects.requireNonNull(principalFieldSerializer.serialize(
+            RedisTicketDocument.FIELD_NAME_PRINCIPAL)));
+        ticketChunk.stream()
+            .map(RedisTicketToDelete::sessionIndexMember)
+            .map(sessionValueSerializer::serialize)
+            .map(Objects::requireNonNull)
+            .forEach(keysAndArguments::add);
+
+        val result = casRedisTemplates.getTicketsRedisTemplate().execute(
+            (RedisCallback<Long>) connection -> connection.scriptingCommands().eval(
+                DELETE_PRINCIPAL_TICKET_BATCH_SCRIPT,
+                ReturnType.INTEGER,
+                ticketChunk.size() + 1,
+                keysAndArguments.toArray(byte[][]::new)));
+        return Objects.requireNonNullElse(result, 0L);
     }
 
     @Override
@@ -888,7 +946,9 @@ public class RedisTicketRegistry extends AbstractTicketRegistry implements Clean
                 }));
     }
 
-    private record RedisTicketToDelete(String redisKey, String cacheKey) {
+    private record RedisTicketToDelete(String redisKey,
+                                       String cacheKey,
+                                       String sessionIndexMember) {
     }
 
     @Data
