@@ -11,9 +11,9 @@ workflow is hard-gated to `SoooEZ/cas`.
 The release driver rejects a build unless all of these values match:
 
 - Maven group: `io.github.soooez.cas`
-- version form: `8.0.0-casidp.N`, where `N` is a positive integer
-- upstream tag/version: `v8.0.0` / `8.0.0`
-- upstream commit: `87e190fbef25608b1c4d302c30448f267b345c6e`
+- version form: `8.0.1-casidp.N`, where `N` is a positive integer
+- upstream tag/version: `v8.0.1` / `8.0.1`
+- upstream commit: `ca02a58b41ddd65d3b43270d01c854b845d5e1dc`
 - fork repository: `https://github.com/SoooEZ/cas`
 - fork release tag: the existing annotated, approved-key-signed `v<version>`
 
@@ -25,7 +25,7 @@ the signed release tag. The tooling never creates, deletes, or pushes a tag.
 
 Create two protected GitHub environments named `casidp-release-sign` and
 `casidp-release-publish`. Require reviewer approval for each one and restrict
-both to protected tags matching `v8.0.0-casidp.*`.
+both to protected tags matching `v8.0.1-casidp.*`.
 
 Configure only these secrets in `casidp-release-sign`:
 
@@ -180,7 +180,7 @@ publication task graph, requires exactly one such index for every authorized
 artifact, rejects every unknown non-version file, and only then removes those
 indexes and their generated checksums. Every exact-version POM, Gradle module,
 JAR, WAR, and signature remains in the create-only manifest. Consumers must
-request the fixed `8.0.0-casidp.N` version; the direct publisher never uploads
+request the fixed `8.0.1-casidp.N` version; the direct publisher never uploads
 mutable Maven version indexes.
 
 ## Release procedure

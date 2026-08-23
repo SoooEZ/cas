@@ -8,8 +8,8 @@ IFS=$'\n\t'
 umask 077
 
 readonly EXPECTED_GROUP='io.github.soooez.cas'
-readonly EXPECTED_UPSTREAM_VERSION='8.0.0'
-readonly EXPECTED_UPSTREAM_COMMIT='87e190fbef25608b1c4d302c30448f267b345c6e'
+readonly EXPECTED_UPSTREAM_VERSION='8.0.1'
+readonly EXPECTED_UPSTREAM_COMMIT='ca02a58b41ddd65d3b43270d01c854b845d5e1dc'
 readonly EXPECTED_FORK_REPOSITORY='https://github.com/SoooEZ/cas'
 readonly EXPECTED_GITHUB_REPOSITORY='SoooEZ/cas'
 readonly PACKAGE_REPOSITORY='https://maven.pkg.github.com/SoooEZ/cas'
@@ -427,8 +427,8 @@ validate_metadata() {
         || die "Upstream commit must be exactly ${EXPECTED_UPSTREAM_COMMIT}"
     [[ ${FORK_REPOSITORY} == "${EXPECTED_FORK_REPOSITORY}" ]] \
         || die "Fork repository must be exactly ${EXPECTED_FORK_REPOSITORY}"
-    [[ ${PROJECT_VERSION} =~ ^8\.0\.0-casidp\.[1-9][0-9]*$ ]] \
-        || die "Fork version must match 8.0.0-casidp.N, not ${PROJECT_VERSION}"
+    [[ ${PROJECT_VERSION} =~ ^8\.0\.1-casidp\.[1-9][0-9]*$ ]] \
+        || die "Fork version must match 8.0.1-casidp.N, not ${PROJECT_VERSION}"
     [[ ${PROJECT_VERSION} != *-SNAPSHOT ]] || die 'Fork releases cannot be snapshots'
     [[ -f gradle/verification-metadata.xml \
         && ! -L gradle/verification-metadata.xml ]] \

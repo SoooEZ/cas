@@ -72,8 +72,8 @@ RETRY_JITTER_SECONDS = 0.25
 EXPECTED_FORK_GROUP = "io.github.soooez.cas"
 EXPECTED_FORK_REPOSITORY = "https://github.com/SoooEZ/cas"
 EXPECTED_PACKAGE_REPOSITORY = "https://maven.pkg.github.com/SoooEZ/cas"
-EXPECTED_UPSTREAM_COMMIT = "87e190fbef25608b1c4d302c30448f267b345c6e"
-EXPECTED_UPSTREAM_VERSION = "8.0.0"
+EXPECTED_UPSTREAM_COMMIT = "ca02a58b41ddd65d3b43270d01c854b845d5e1dc"
+EXPECTED_UPSTREAM_VERSION = "8.0.1"
 EXPECTED_PARTIAL_FAILURE_POLICY = (
     "Burn the version; never overwrite it; release the next casidp.N version."
 )
@@ -661,7 +661,7 @@ def remove_mutable_maven_metadata(args: argparse.Namespace) -> None:
     """
     if args.group != EXPECTED_FORK_GROUP:
         fail(f"Mutable metadata removal has an untrusted Maven group: {args.group}")
-    if not re.fullmatch(r"8\.0\.0-casidp\.[1-9][0-9]*", args.version):
+    if not re.fullmatch(r"8\.0\.1-casidp\.[1-9][0-9]*", args.version):
         fail(f"Mutable metadata removal has an invalid fork version: {args.version}")
 
     repository_argument = Path(args.repository).absolute()
@@ -1474,7 +1474,7 @@ def validate_publish_manifest(
     if group != EXPECTED_FORK_GROUP:
         fail(f"Release manifest has an untrusted Maven group: {group}")
     if not isinstance(version, str) or not re.fullmatch(
-        r"8\.0\.0-casidp\.[1-9][0-9]*",
+        r"8\.0\.1-casidp\.[1-9][0-9]*",
         version,
     ):
         fail(f"Release manifest has an invalid fork version: {version}")

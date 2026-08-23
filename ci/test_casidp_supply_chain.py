@@ -373,9 +373,9 @@ class MutableMavenMetadataTests(unittest.TestCase):
             root = Path(temporary_directory)
             repository = root / "repository"
             artifact_root = repository / "io/github/soooez/cas/module"
-            version_root = artifact_root / "8.0.0-casidp.2"
+            version_root = artifact_root / "8.0.1-casidp.1"
             version_root.mkdir(parents=True)
-            (version_root / "module-8.0.0-casidp.2.pom").write_text(
+            (version_root / "module-8.0.1-casidp.1.pom").write_text(
                 "<project/>\n", encoding="utf-8"
             )
             metadata = artifact_root / "maven-metadata.xml"
@@ -412,14 +412,14 @@ class MutableMavenMetadataTests(unittest.TestCase):
             repository=str(repository),
             task_graph=str(graph),
             group="io.github.soooez.cas",
-            version="8.0.0-casidp.2",
+            version="8.0.1-casidp.1",
         )
 
     def test_removes_only_artifact_root_metadata_and_checksums(self) -> None:
         with self.fixture() as (repository, graph, metadata):
             pom = (
                 metadata.parent
-                / "8.0.0-casidp.2/module-8.0.0-casidp.2.pom"
+                / "8.0.1-casidp.1/module-8.0.1-casidp.1.pom"
             )
 
             AUDITOR.remove_mutable_maven_metadata(
@@ -465,7 +465,7 @@ def manifest_document(
     *,
     commit: str = "1" * 40,
     project_count: int = 1,
-    version: str = "8.0.0-casidp.2",
+    version: str = "8.0.1-casidp.1",
 ) -> dict[str, Any]:
     return {
         "artifacts": artifacts,
@@ -659,7 +659,7 @@ class RepositoryAuditTests(unittest.TestCase):
                         group="com.example",
                         version="1.0",
                         fork_commit="fork-commit",
-                        upstream_version="8.0.0",
+                        upstream_version="8.0.1",
                         upstream_commit="upstream-commit",
                         fork_repository="https://github.com/example/cas",
                         package_repository="https://maven.pkg.github.com/example/cas",
@@ -705,8 +705,8 @@ class RemoteReadTests(unittest.TestCase):
     def test_manifest_schema_rejects_duplicate_and_unexpected_fields(self) -> None:
         artifact = {
             "path": (
-                "repository/io/github/soooez/cas/module/8.0.0-casidp.2/"
-                "module-8.0.0-casidp.2.pom"
+                "repository/io/github/soooez/cas/module/8.0.1-casidp.1/"
+                "module-8.0.1-casidp.1.pom"
             ),
             "sha256": "a" * 64,
             "size": 1,
@@ -729,13 +729,13 @@ class RemoteReadTests(unittest.TestCase):
 
     def test_manifest_filename_must_match_exact_maven_identity(self) -> None:
         unsafe_identity = (
-            "repository/io/github/soooez/cas/module/8.0.0-casidp.2/other.pom"
+            "repository/io/github/soooez/cas/module/8.0.1-casidp.1/other.pom"
         )
         with self.assertRaisesRegex(AUDITOR.AuditError, "artifact filename"):
             AUDITOR.manifest_artifact_coordinates(
                 unsafe_identity,
                 AUDITOR.EXPECTED_FORK_GROUP,
-                "8.0.0-casidp.2",
+                "8.0.1-casidp.1",
             )
 
     def test_response_is_hashed_in_bounded_chunks_and_exact_size_is_enforced(self) -> None:
@@ -931,7 +931,7 @@ class RemoteStateAndRetryTests(unittest.TestCase):
 class PublicationCandidateVerificationTests(unittest.TestCase):
     commit = "1" * 40
     token = "candidate-token-that-must-not-reach-subprocesses"
-    version = "8.0.0-casidp.2"
+    version = "8.0.1-casidp.1"
 
     def gpg(self, home: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
@@ -1267,7 +1267,7 @@ class ExactBytesPublisherTests(unittest.TestCase):
     actor = "release-actor"
     commit = "1" * 40
     token = "release-token-that-must-never-appear-in-argv"
-    version = "8.0.0-casidp.2"
+    version = "8.0.1-casidp.1"
 
     def setUp(self) -> None:
         sleep_patcher = mock.patch.object(AUDITOR, "SLEEP", lambda _delay: None)
