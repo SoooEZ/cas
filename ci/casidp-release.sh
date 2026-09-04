@@ -31,8 +31,14 @@ readonly -a STRICT_DEPENDENCY_LOCKS=(
     ':docs:cas-server-documentation-processor'
     "${ROOT_DIR}/support/cas-server-support-palantir/gradle.lockfile"
     ':support:cas-server-support-palantir'
+    "${ROOT_DIR}/support/cas-server-support-redis-core/gradle.lockfile"
+    ':support:cas-server-support-redis-core'
     "${ROOT_DIR}/support/cas-server-support-redis-ticket-registry/gradle.lockfile"
     ':support:cas-server-support-redis-ticket-registry'
+    "${ROOT_DIR}/support/cas-server-support-trusted-mfa-redis/gradle.lockfile"
+    ':support:cas-server-support-trusted-mfa-redis'
+    "${ROOT_DIR}/support/cas-server-support-webauthn-redis/gradle.lockfile"
+    ':support:cas-server-support-webauthn-redis'
     "${ROOT_DIR}/webapp/cas-server-webapp/gradle.lockfile"
     ':webapp:cas-server-webapp'
     "${ROOT_DIR}/webapp/cas-server-webapp-native/gradle.lockfile"
@@ -252,8 +258,8 @@ import stat
 import sys
 
 arguments = sys.argv[1:]
-if len(arguments) != 18 or len(arguments) % 2:
-    raise SystemExit("Unsafe strict dependency-lock boundary: expected exactly nine locks")
+if len(arguments) != 24 or len(arguments) % 2:
+    raise SystemExit("Unsafe strict dependency-lock boundary: expected exactly twelve locks")
 
 lock_specs = [
     (pathlib.Path(arguments[index]), arguments[index + 1])
@@ -274,8 +280,20 @@ expected_specs = [
         ":support:cas-server-support-palantir",
     ),
     (
+        pathlib.Path("support/cas-server-support-redis-core/gradle.lockfile"),
+        ":support:cas-server-support-redis-core",
+    ),
+    (
         pathlib.Path("support/cas-server-support-redis-ticket-registry/gradle.lockfile"),
         ":support:cas-server-support-redis-ticket-registry",
+    ),
+    (
+        pathlib.Path("support/cas-server-support-trusted-mfa-redis/gradle.lockfile"),
+        ":support:cas-server-support-trusted-mfa-redis",
+    ),
+    (
+        pathlib.Path("support/cas-server-support-webauthn-redis/gradle.lockfile"),
+        ":support:cas-server-support-webauthn-redis",
     ),
     (
         pathlib.Path("webapp/cas-server-webapp/gradle.lockfile"),
@@ -402,7 +420,14 @@ for lockfile, project in lock_specs:
         ":": {"aggregateJavadocClasspath", "cyclonedxBom"},
         ":core:cas-server-core-web": {"testRuntimeClasspath"},
         ":support:cas-server-support-palantir": {"runtimeClasspath"},
+        ":support:cas-server-support-redis-core": {"testRuntimeClasspath"},
         ":support:cas-server-support-redis-ticket-registry": {
+            "testRuntimeClasspath"
+        },
+        ":support:cas-server-support-trusted-mfa-redis": {
+            "testRuntimeClasspath"
+        },
+        ":support:cas-server-support-webauthn-redis": {
             "testRuntimeClasspath"
         },
     }.get(project, set())
@@ -1618,6 +1643,7 @@ readonly GRADLE_COMMON_ARGUMENTS=(
     '--stacktrace'
     '-Porg.gradle.java.installations.auto-download=false'
     '-Dorg.gradle.unsafe.isolated-projects=false'
+    '-DPTS_ENABLED=false'
     '-DCI=true'
     '-DcasIdpForkPublish=true'
     '-DpublishMinimalArtifacts'
@@ -1630,7 +1656,10 @@ supply_chain_input_digest() {
         core/cas-server-core-web/gradle.lockfile \
         docs/cas-server-documentation-processor/gradle.lockfile \
         support/cas-server-support-palantir/gradle.lockfile \
+        support/cas-server-support-redis-core/gradle.lockfile \
         support/cas-server-support-redis-ticket-registry/gradle.lockfile \
+        support/cas-server-support-trusted-mfa-redis/gradle.lockfile \
+        support/cas-server-support-webauthn-redis/gradle.lockfile \
         webapp/cas-server-webapp/gradle.lockfile \
         webapp/cas-server-webapp-native/gradle.lockfile \
         webapp/cas-server-webapp-jetty/gradle.lockfile \
@@ -1705,41 +1734,55 @@ build_candidate() {
         --parallel
     verify_supply_chain_inputs_unchanged
 
-    # Run the exact security regression inventory separately. Gradle applies
-    # --tests to every Test task in an invocation; combining these filters with
-    # `build` would silently turn the apparent full build into a filtered run.
+    # Run the exact security regression inventory separately. Every --tests
+    # option is deliberately adjacent to the Test task it configures; Gradle
+    # binds task options to the preceding task rather than to the invocation.
+    # Combining filters with `build` would also make the full-build evidence
+    # ambiguous, so the unfiltered build remains a separate invocation.
     ./gradlew "${GRADLE_COMMON_ARGUMENTS[@]}" \
         :api:cas-server-core-api-protocol:testCAS \
-        :api:cas-server-core-api-ticket:testTickets \
-        :core:cas-server-core-cookie-api:testCookie \
-        :core:cas-server-core-cookie:testCookie \
-        :core:cas-server-core-services-authentication:testAuthentication \
-        :core:cas-server-core-tickets-api:testTickets \
-        :core:cas-server-core-web:testUtility \
-        :core:cas-server-core-web:testWeb \
-        :core:cas-server-core-webflow-api:testWebflowActions \
-        :core:cas-server-core-webflow:testWebflowAuthenticationActions \
-        :core:cas-server-core-webflow:testWebflowServiceActions \
-        :support:cas-server-support-actions:testWebflowActions \
-        :support:cas-server-support-redis-ticket-registry:testRedis \
         --tests org.apereo.cas.protocol.ProtocolFinalResponsePolicyTests \
         --tests org.apereo.cas.protocol.ProtocolFinalResponseBundleTests \
+        :api:cas-server-core-api-ticket:testTickets \
         --tests org.apereo.cas.ticket.registry.TicketIssuanceReadContextTests \
         --tests org.apereo.cas.ticket.registry.TicketIssuanceWriteContextTests \
+        :core:cas-server-core-cookie-api:testCookie \
         --tests org.apereo.cas.web.support.mgmr.EncryptedCookieValueManagerTests \
+        :core:cas-server-core-cookie:testCookie \
         --tests org.apereo.cas.web.support.CookieRetrievingCookieGeneratorTests \
+        :core:cas-server-core-services-authentication:testAuthentication \
         --tests org.apereo.cas.authentication.principal.DefaultResponseTests \
+        :core:cas-server-core-tickets-api:testTickets \
         --tests org.apereo.cas.ticket.registry.AbstractTicketRegistryIssuancePolicyTests \
-        --tests org.apereo.cas.config.CasCoreWebFinalResponsePolicyTests \
+        :core:cas-server-core-web:testUtility \
         --tests org.apereo.cas.web.support.WebUtilsTests \
+        :core:cas-server-core-web:testWeb \
+        --tests org.apereo.cas.config.CasCoreWebFinalResponsePolicyTests \
+        :core:cas-server-core-webflow-api:testWebflowActions \
         --tests org.apereo.cas.web.flow.actions.CasProtocolFinalResponseDeliveryBuilderTests \
+        :core:cas-server-core-webflow:testWebflowAuthenticationActions \
         --tests org.apereo.cas.web.flow.actions.BrowserStorageActionTests \
+        :core:cas-server-core-webflow:testWebflowServiceActions \
         --tests org.apereo.cas.web.flow.actions.RedirectToServiceActionTests \
+        :support:cas-server-support-actions:testWebflowActions \
         --tests org.apereo.cas.web.flow.SendTicketGrantingTicketActionTests \
         --tests org.apereo.cas.web.flow.FetchTicketGrantingTicketActionTests \
+        :support:cas-server-support-redis-core:testRedis \
+        --tests org.apereo.cas.redis.core.RedisAccountSecurityKeyCodecTests \
+        --tests org.apereo.cas.redis.core.RedisAccountSecurityDeletionFenceTests \
+        --tests org.apereo.cas.redis.core.RedisAccountSecurityDeletionFenceStoreVerifierTests \
+        :support:cas-server-support-redis-ticket-registry:testRedis \
         --tests org.apereo.cas.ticket.registry.key.DigestingRedisLockRegistryTests \
         --tests org.apereo.cas.ticket.registry.RedisTicketRegistryWriteInterceptorTests \
         --tests org.apereo.cas.ticket.registry.sub.DefaultRedisTicketRegistryMessageListenerTests \
+        --tests 'org.apereo.cas.ticket.registry.RedisServerTicketRegistryTests$WithoutRedisModulesTests' \
+        :support:cas-server-support-redis-ticket-registry:testSimple \
+        --tests org.apereo.cas.ticket.registry.RedisTicketRegistryWriteExecutorTests \
+        :support:cas-server-support-trusted-mfa-redis:testRedis \
+        --tests org.apereo.cas.trusted.authentication.storage.RedisMultifactorAuthenticationTrustStorageTests \
+        --tests org.apereo.cas.trusted.authentication.storage.RedisTrustedMfaRecordLocatorTests \
+        :support:cas-server-support-webauthn-redis:testRedis \
+        --tests org.apereo.cas.webauthn.RedisWebAuthnCredentialRepositoryTests \
         --parallel
     verify_supply_chain_inputs_unchanged
     python3 "${AUDITOR}" audit-test-results \
@@ -1758,9 +1801,17 @@ build_candidate() {
         --result 'core/cas-server-core-webflow/build/test-results/testWebflowServiceActions/TEST-org.apereo.cas.web.flow.actions.RedirectToServiceActionTests.xml:5' \
         --result 'support/cas-server-support-actions/build/test-results/testWebflowActions/TEST-org.apereo.cas.web.flow.SendTicketGrantingTicketActionTests.xml:4' \
         --result 'support/cas-server-support-actions/build/test-results/testWebflowActions/TEST-org.apereo.cas.web.flow.FetchTicketGrantingTicketActionTests.xml:1' \
+        --result 'support/cas-server-support-redis-core/build/test-results/testRedis/TEST-org.apereo.cas.redis.core.RedisAccountSecurityKeyCodecTests.xml:3' \
+        --result 'support/cas-server-support-redis-core/build/test-results/testRedis/TEST-org.apereo.cas.redis.core.RedisAccountSecurityDeletionFenceTests.xml:2' \
+        --result 'support/cas-server-support-redis-core/build/test-results/testRedis/TEST-org.apereo.cas.redis.core.RedisAccountSecurityDeletionFenceStoreVerifierTests.xml:2' \
         --result 'support/cas-server-support-redis-ticket-registry/build/test-results/testRedis/TEST-org.apereo.cas.ticket.registry.key.DigestingRedisLockRegistryTests.xml:1' \
-        --result 'support/cas-server-support-redis-ticket-registry/build/test-results/testRedis/TEST-org.apereo.cas.ticket.registry.RedisTicketRegistryWriteInterceptorTests.xml:73' \
-        --result 'support/cas-server-support-redis-ticket-registry/build/test-results/testRedis/TEST-org.apereo.cas.ticket.registry.sub.DefaultRedisTicketRegistryMessageListenerTests.xml:2'
+        --result 'support/cas-server-support-redis-ticket-registry/build/test-results/testRedis/TEST-org.apereo.cas.ticket.registry.RedisTicketRegistryWriteInterceptorTests.xml:80' \
+        --result 'support/cas-server-support-redis-ticket-registry/build/test-results/testRedis/TEST-org.apereo.cas.ticket.registry.RedisServerTicketRegistryTests$WithoutRedisModulesTests.xml:85' \
+        --result 'support/cas-server-support-redis-ticket-registry/build/test-results/testSimple/TEST-org.apereo.cas.ticket.registry.RedisTicketRegistryWriteExecutorTests.xml:4' \
+        --result 'support/cas-server-support-redis-ticket-registry/build/test-results/testRedis/TEST-org.apereo.cas.ticket.registry.sub.DefaultRedisTicketRegistryMessageListenerTests.xml:2' \
+        --result 'support/cas-server-support-trusted-mfa-redis/build/test-results/testRedis/TEST-org.apereo.cas.trusted.authentication.storage.RedisMultifactorAuthenticationTrustStorageTests.xml:22' \
+        --result 'support/cas-server-support-trusted-mfa-redis/build/test-results/testRedis/TEST-org.apereo.cas.trusted.authentication.storage.RedisTrustedMfaRecordLocatorTests.xml:11' \
+        --result 'support/cas-server-support-webauthn-redis/build/test-results/testRedis/TEST-org.apereo.cas.webauthn.RedisWebAuthnCredentialRepositoryTests.xml:18'
 }
 
 normalize_resolved_sbom() {

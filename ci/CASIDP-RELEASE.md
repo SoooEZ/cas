@@ -112,7 +112,10 @@ deployable Jetty and Tomcat WAR variants also consume those ranges. In fork
 release mode, exactly the root project, `:core:cas-server-core-web`,
 `:docs:cas-server-documentation-processor`,
 `:support:cas-server-support-palantir`,
+`:support:cas-server-support-redis-core`,
 `:support:cas-server-support-redis-ticket-registry`,
+`:support:cas-server-support-trusted-mfa-redis`,
+`:support:cas-server-support-webauthn-redis`,
 `:webapp:cas-server-webapp`, `:webapp:cas-server-webapp-native`,
 `:webapp:cas-server-webapp-jetty`, and
 `:webapp:cas-server-webapp-tomcat` therefore activate Gradle STRICT dependency
@@ -124,13 +127,16 @@ release inputs:
 - `core/cas-server-core-web/gradle.lockfile`
 - `docs/cas-server-documentation-processor/gradle.lockfile`
 - `support/cas-server-support-palantir/gradle.lockfile`
+- `support/cas-server-support-redis-core/gradle.lockfile`
 - `support/cas-server-support-redis-ticket-registry/gradle.lockfile`
+- `support/cas-server-support-trusted-mfa-redis/gradle.lockfile`
+- `support/cas-server-support-webauthn-redis/gradle.lockfile`
 - `webapp/cas-server-webapp/gradle.lockfile`
 - `webapp/cas-server-webapp-native/gradle.lockfile`
 - `webapp/cas-server-webapp-jetty/gradle.lockfile`
 - `webapp/cas-server-webapp-tomcat/gradle.lockfile`
 
-The release driver audits exactly those nine paths and rejects a missing,
+The release driver audits exactly those twelve paths and rejects a missing,
 non-regular, or symbolic-link lockfile; non-UTF-8 or non-LF bytes; a missing
 final newline; non-canonical Gradle headers or `empty=` footers; duplicate GAVs
 or configurations; empty versions; snapshots; and dynamic/range selectors. It
@@ -143,9 +149,9 @@ The `--write-locks` bootstrap selects the same reproducible dependency and
 plugin graph as `-DcasIdpForkPublish=true`, while publication repositories,
 credentials, and signing remain controlled only by that explicit system
 property. Gradle writes an incidental, settings-scoped
-`settings-gradle.lockfile`; it is outside the reviewed nine-graph boundary
+`settings-gradle.lockfile`; it is outside the reviewed twelve-graph boundary
 and must not be committed. The canonical update helper removes it after each
-pass, resolves all nine graphs together plus the root CycloneDX plugin's
+pass, resolves all twelve graphs together plus the root CycloneDX plugin's
 plugin-only `cyclonedxBom` configuration with strict dependency verification,
 disables build/configuration caches and Java toolchain auto-download, then
 generates the locks a second time and requires byte-identical output. Before
@@ -159,7 +165,7 @@ pass if those reviewed bytes changed. Run only:
 
 The fourth comment line in each generated lockfile is Gradle's project-specific
 shorthand. It is retained as the canonical generated-file header for auditing,
-but maintainers must use the helper above so all nine lock states are updated
+but maintainers must use the helper above so all twelve lock states are updated
 and compared as one reviewed change, including the plugin-only SBOM
 configuration in the root lock. The helper resolves that configuration directly;
 it does not generate 426 module BOMs, which remains the formal candidate
@@ -256,7 +262,13 @@ fork commit.
 Each required JUnit XML suite is also bound to an exact reviewed test count.
 Missing suites, added or removed tests, skips, failures, and errors all stop the
 release. An intentional suite change therefore requires an explicit review and
-count update in `ci/casidp-release.sh`.
+count update in `ci/casidp-release.sh`. The current exact inventory contains 26
+suites and 348 tests. It includes the Redis account-security key codec,
+deletion fence and shared-store verifier, WebAuthn and trusted-MFA terminal-fence integration,
+the trusted-MFA crash-safe record locator, ticket-registry write
+admission/persistence fencing, the complete non-Redis-Modules ticket-registry integration suite,
+and the existing protocol,
+cookie, issuance-policy, Webflow, and Redis regressions.
 
 Dependency verification failures are never repaired in the release workflow.
 Resolve them in a separate review: confirm the dependency and repository
@@ -266,12 +278,68 @@ tag. Treat any strict dependency-lock failure the same way: update the
 affected lockfile only in the separate review described above. Do not weaken
 strict mode, generate locks in CI, or enable automatic toolchain downloads.
 The driver rejects full or selective lock updates and dependency-verification
-metadata/key generation. It also hashes all nine lockfiles plus
+metadata/key generation. It also hashes all twelve lockfiles plus
 `gradle/verification-metadata.xml` before the first Gradle invocation and
 requires the same combined byte identity after every build, task-graph, and
 publication invocation.
 
 ## Compatibility boundary
+
+Adopting the Redis ticket-authority codec, rebuilt principal index, and principal
+mutation fence requires a full-stop cutover. Stop every old CAS writer, deploy
+only the new release, wait for the current schema READY rebuild, and only then
+reopen traffic; a mixed-version rollout can write through fences and leave an
+incomplete authority index. The transition reader/deleter recognizes both the
+new exact-identity digest and the previous mapping. This is sufficient for this
+overlay's canonical UUID principal identifiers, but intentionally never merges
+case-distinct identities in the generic public fork.
+
+The first deployment of the trusted-MFA Redis `record-index-schema-v2` is a
+separate full-stop compatibility boundary. Its global READY state proves that a
+current node completed the existing-principal inventory; it does not make an
+older writer compatible with the per-principal index or terminal fence. No old
+CAS pod, retrying workload, maintenance process, or autoscaled replacement may
+write a legacy trusted-device bucket from before the adopter starts through the
+READY transition, and old writers must remain stopped afterward. A write during
+inventory can land behind the scan cursor and escape the completed inventory.
+A rolling, percentage, or mixed-version upgrade against one writable Redis
+authority is not supported.
+
+Use this order for the first trusted-MFA schema adoption:
+
+1. **Preflight:** inventory every CAS and administrative process with write
+   access to the trusted-MFA Redis authority; disable automatic restart and
+   scale-up of the old deployment; verify the new release against a restored
+   copy; and prepare a restorable, whole-dataset snapshot. Do not create, copy,
+   or edit the schema READY key independently of its records and index state.
+2. **Cut over:** close login and administrative write traffic, stop and verify
+   the absence of every old writer, and take the final quiesced snapshot. Start
+   one current node with ingress still closed. Wait for
+   `record-index-schema-v2` inventory READY and investigate any lease timeout,
+   capacity, deserialization, or ownership error instead of bypassing it. Then
+   start only current-version peers, exercise representative principal reads
+   and removals, and reopen traffic. Never restart an old pod after READY.
+3. **Roll back:** close traffic and stop every current writer before changing
+   binaries. Restore the complete pre-cutover Redis snapshot, or switch an
+   isolated blue-green deployment back to its untouched old dataset, and only
+   then start old-version nodes. Deleting READY or restoring only marker/index
+   keys is not a rollback: a current node may already have migrated legacy
+   buckets or accepted current-format writes. Snapshot rollback discards trusted
+   decisions created after cutover; if that loss is unacceptable, keep traffic
+   closed and roll forward with a corrected current release.
+
+After schema adoption, normal trusted-device save, principal login lookup, and
+record-key removal use the per-principal index and do not issue a Redis
+database-wide `SCAN`. The one-time schema adoption uses a leased global `SCAN`
+to inventory existing principals; a first access may also perform a bounded
+principal-pattern scan to migrate that principal. The result cardinality is
+bounded, but Redis may still traverse its database cursor to satisfy `SCAN
+MATCH`; pre-warm known legacy principals before peak traffic. Database-cursor
+scans remain reserved for schema adoption, transitional rebuild, and explicit
+administrative inventory, ID lookup, or expiration cleanup, and must not be
+placed on the steady login/removal path.
+See the [Redis trusted-device storage guide](../docs/cas-server-documentation/mfa/Multifactor-TrustedDevice-Authentication-Storage-Redis.md)
+for the operational form of this procedure.
 
 The fork intentionally converts ticket-registry public entry points into final
 template methods so admission, persistence completion, and generation-aware

@@ -83,6 +83,27 @@ public class RedisObjectFactory {
     }
 
     /**
+     * Create a Redis template whose keys and values use the Redis string
+     * protocol without compression or object framing. This template is meant
+     * for bounded coordination metadata that must also be read and written by
+     * server-side Redis scripts.
+     *
+     * @param connectionFactory the connection factory
+     * @return the string Redis template
+     */
+    public static CasRedisTemplate<String, String> newStringRedisTemplate(
+        final RedisConnectionFactory connectionFactory) {
+        val template = new DefaultCasRedisTemplate<String, String>();
+        val serializer = new StringRedisSerializer();
+        template.setKeySerializer(serializer);
+        template.setHashKeySerializer(serializer);
+        template.setValueSerializer(serializer);
+        template.setHashValueSerializer(serializer);
+        template.setConnectionFactory(connectionFactory);
+        return template;
+    }
+
+    /**
      * New redis connection factory.
      *
      * @param redis         the redis

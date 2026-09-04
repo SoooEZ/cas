@@ -13,6 +13,8 @@ import org.apereo.cas.web.report.AbstractCasEndpointTests;
 import lombok.val;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceAccessMode;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
@@ -37,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.*;
     CasRedisCoreAutoConfiguration.class,
     CasRedisTicketRegistryAutoConfiguration.class
 })
+@ResourceLock(value = "redis-ticket-registry", mode = ResourceAccessMode.READ_WRITE)
 class RedisTicketRegistryCacheEndpointTests extends AbstractCasEndpointTests {
     @Autowired
     @Qualifier("redisTicketRegistryCacheEndpoint")

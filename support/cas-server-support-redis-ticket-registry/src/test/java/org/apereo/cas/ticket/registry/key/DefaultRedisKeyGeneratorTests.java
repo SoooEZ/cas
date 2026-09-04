@@ -15,6 +15,8 @@ import lombok.val;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.parallel.ResourceAccessMode;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.*;
     classes = BaseTicketRegistryTests.SharedTestConfiguration.class,
     properties = {
         "cas.ticket.tgt.core.service-tracking-policy=ALL",
+        "cas.ticket.registry.redis.enable-redis-search=false",
         "cas.ticket.registry.cleaner.schedule.enabled=false"
     })
 @ExtendWith(CasTestExtension.class)
@@ -42,6 +45,7 @@ import static org.junit.jupiter.api.Assertions.*;
     CasRedisCoreAutoConfiguration.class,
     CasRedisTicketRegistryAutoConfiguration.class
 })
+@ResourceLock(value = "redis-ticket-registry", mode = ResourceAccessMode.READ_WRITE)
 class DefaultRedisKeyGeneratorTests {
     @Autowired
     @Qualifier(RedisKeyGeneratorFactory.BEAN_NAME)

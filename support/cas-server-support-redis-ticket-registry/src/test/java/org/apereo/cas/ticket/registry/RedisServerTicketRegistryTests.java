@@ -23,7 +23,11 @@ import org.apereo.cas.ticket.expiration.NeverExpiresExpirationPolicy;
 import org.apereo.cas.ticket.expiration.TimeoutExpirationPolicy;
 import org.apereo.cas.ticket.proxy.ProxyGrantingTicket;
 import org.apereo.cas.ticket.proxy.ProxyTicket;
+import org.apereo.cas.ticket.registry.key.RedisKeyGenerator;
 import org.apereo.cas.ticket.registry.key.RedisKeyGeneratorFactory;
+import org.apereo.cas.ticket.registry.key.RedisPrincipalIdentifierCodec;
+import org.apereo.cas.ticket.registry.key.RedisPrincipalTicketIndexKeyGenerator;
+import org.apereo.cas.ticket.registry.key.RedisPrincipalTicketMutationFenceKeyGenerator;
 import org.apereo.cas.ticket.tracking.TicketTrackingPolicy;
 import org.apereo.cas.util.LoggingUtils;
 import org.apereo.cas.util.ProxyGrantingTicketIdGenerator;
@@ -45,12 +49,16 @@ import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.parallel.ResourceAccessMode;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junitpioneer.jupiter.RetryingTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.util.AopTestUtils;
 import static org.awaitility.Awaitility.*;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -63,6 +71,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @EnabledIfListeningOnPort(port = 6379)
 @Tag("Redis")
 @Slf4j
+@ResourceLock(value = "redis-ticket-registry", mode = ResourceAccessMode.READ_WRITE)
 class RedisServerTicketRegistryTests {
 
     @Nested
@@ -164,6 +173,91 @@ class RedisServerTicketRegistryTests {
         @Qualifier(RedisKeyGeneratorFactory.BEAN_NAME)
         private RedisKeyGeneratorFactory redisKeyGeneratorFactory;
 
+        @Autowired
+        @Qualifier(RedisPrincipalTicketMutationFence.BEAN_NAME)
+        private RedisPrincipalTicketMutationFence principalMutationFence;
+
+        @RepeatedTest(1)
+        void verifyTemporaryPrincipalFenceIsReplaySafeAndBlocksOnlyWrites() throws Throwable {
+            val principalId = "Case.Sensitive+" + UUID.randomUUID() + "@Example.ORG";
+            val distinctPrincipal = principalId.toLowerCase(Locale.ROOT);
+            val token = UUID.randomUUID().toString();
+            val registry = getNewTicketRegistry();
+            val existingTicket = new TicketGrantingTicketImpl(
+                new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                    .getNewTicketId(TicketGrantingTicket.PREFIX),
+                CoreAuthenticationTestUtils.getAuthentication(principalId),
+                NeverExpiresExpirationPolicy.INSTANCE);
+            val blockedTicket = new TicketGrantingTicketImpl(
+                new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                    .getNewTicketId(TicketGrantingTicket.PREFIX),
+                CoreAuthenticationTestUtils.getAuthentication(principalId),
+                NeverExpiresExpirationPolicy.INSTANCE);
+            registry.addTicket(existingTicket);
+
+            val handle = principalMutationFence.acquire(
+                principalId, token, Duration.ofSeconds(30));
+            assertEquals(handle, principalMutationFence.acquire(
+                principalId, token, Duration.ofSeconds(30)));
+            assertNotEquals(handle.redisKey(),
+                principalMutationFence.keyForPrincipal(distinctPrincipal));
+            assertTrue(principalMutationFence.inspect(distinctPrincipal).isEmpty());
+            assertEquals(
+                RedisPrincipalTicketMutationFence.Mode.TEMPORARY,
+                principalMutationFence.inspect(principalId).orElseThrow().mode());
+            assertEquals(
+                RedisPrincipalTicketMutationFenceKeyGenerator.forPrincipal(
+                    RedisPrincipalIdentifierCodec.encode(principalId)),
+                handle.redisKey());
+            assertFalse(handle.redisKey().toLowerCase(Locale.ROOT)
+                .contains("case.sensitive"));
+            assertThrows(IllegalStateException.class,
+                () -> principalMutationFence.acquire(
+                    principalId, UUID.randomUUID().toString(), Duration.ofSeconds(30)));
+
+            assertThrows(RuntimeException.class, () -> registry.addTicket(blockedTicket));
+            assertNull(registry.getTicket(blockedTicket.getId()));
+            assertEquals(1, registry.deleteTicketsFor(principalId),
+                "A principal fence must not obstruct authoritative deletion");
+            assertNull(registry.getTicket(existingTicket.getId()));
+            assertFalse(principalMutationFence.release(principalId, "wrong-token"));
+            assertTrue(principalMutationFence.release(principalId, token));
+            assertTrue(principalMutationFence.inspect(principalId).isEmpty());
+
+            registry.addTicket(blockedTicket);
+            assertNotNull(registry.getTicket(blockedTicket.getId()));
+        }
+
+        @RepeatedTest(1)
+        void verifyTerminalPrincipalFenceIsPermanentAndPromotable() {
+            val principalId = UUID.randomUUID().toString();
+            val token = UUID.randomUUID().toString();
+            val temporary = principalMutationFence.acquire(
+                principalId, token, Duration.ofSeconds(30));
+            try {
+                val terminal = principalMutationFence.acquireTerminal(principalId, token);
+                assertEquals(temporary.redisKey(), terminal.redisKey());
+                assertEquals(RedisPrincipalTicketMutationFence.Mode.TERMINAL, terminal.mode());
+                assertEquals(terminal, principalMutationFence.acquireTerminal(principalId, token));
+                val state = principalMutationFence.inspect(principalId).orElseThrow();
+                assertEquals(RedisPrincipalTicketMutationFence.Mode.TERMINAL, state.mode());
+                assertTrue(state.remainingLease().isEmpty());
+                assertEquals(-1, getCasRedisTemplates().getSessionsRedisTemplate()
+                    .getExpire(terminal.redisKey()));
+                assertThrows(IllegalStateException.class,
+                    () -> principalMutationFence.acquireTerminal(
+                        principalId, UUID.randomUUID().toString()));
+                assertThrows(IllegalStateException.class,
+                    () -> principalMutationFence.acquire(
+                        principalId, token, Duration.ofSeconds(30)));
+                assertFalse(principalMutationFence.release(principalId, token),
+                    "The temporary-release operation must never remove a terminal fence");
+                assertTrue(principalMutationFence.inspect(principalId).isPresent());
+            } finally {
+                getCasRedisTemplates().getSessionsRedisTemplate().delete(temporary.redisKey());
+            }
+        }
+
         @RepeatedTest(1)
         void verifyAuthoritativeSourceReadBypassesStaleNearCache() throws Throwable {
             val authentication = CoreAuthenticationTestUtils.getAuthentication(
@@ -193,7 +287,7 @@ class RedisServerTicketRegistryTests {
         }
 
         @RepeatedTest(2)
-        void verifyDeleteTicketsForRemovesTicketGrantingSessionIndexMembers() throws Throwable {
+        void verifyDeleteTicketsForUsesCompletePrincipalIndex() throws Throwable {
             val principalId = UUID.randomUUID().toString();
             val authentication = CoreAuthenticationTestUtils.getAuthentication(principalId);
             val tgtId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
@@ -204,18 +298,515 @@ class RedisServerTicketRegistryTests {
                 .getNewTicketId(ProxyGrantingTicket.PROXY_GRANTING_TICKET_PREFIX);
             val pgt = new ProxyGrantingTicketImpl(
                 pgtId, authentication, NeverExpiresExpirationPolicy.INSTANCE);
+            val service = RegisteredServiceTestUtils.getService(UUID.randomUUID().toString());
+            val stId = new ServiceTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(ServiceTicket.PREFIX);
+            val st = tgt.grantServiceTicket(
+                stId,
+                service,
+                NeverExpiresExpirationPolicy.INSTANCE,
+                false,
+                serviceTicketSessionTrackingPolicy);
+            val ptId = new ProxyTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(ProxyTicket.PROXY_TICKET_PREFIX);
+            val pt = pgt.grantProxyTicket(
+                ptId,
+                service,
+                NeverExpiresExpirationPolicy.INSTANCE,
+                serviceTicketSessionTrackingPolicy);
             val registry = getNewTicketRegistry();
             registry.addTicket(tgt);
             registry.addTicket(pgt);
+            registry.addTicket(st);
+            registry.addTicket(pt);
 
             assertEquals(2, registry.countSessionsFor(principalId));
-            assertEquals(2, registry.deleteTicketsFor(principalId));
+            val principalIndexKey = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(
+                RedisPrincipalIdentifierCodec.encode(principalId));
+            assertEquals(4, getCasRedisTemplates().getSessionsRedisTemplate()
+                .boundZSetOps(principalIndexKey).zCard());
+            assertEquals(4, registry.deleteTicketsFor(principalId));
             assertEquals(0, registry.countSessionsFor(principalId));
             assertNull(registry.getTicket(tgtId));
             assertNull(registry.getTicket(pgtId));
+            assertNull(registry.getTicket(stId));
+            assertNull(registry.getTicket(ptId));
+            assertFalse(getCasRedisTemplates().getSessionsRedisTemplate().hasKey(principalIndexKey));
 
             assertEquals(0, registry.deleteTicketsFor(principalId));
             assertEquals(0, registry.countSessionsFor(principalId));
+        }
+
+        @RepeatedTest(1)
+        void verifyBulkWriteMaintainsPrincipalIndex() throws Throwable {
+            val principalId = UUID.randomUUID().toString();
+            val authentication = CoreAuthenticationTestUtils.getAuthentication(principalId);
+            val tickets = IntStream.range(0, 3)
+                .mapToObj(_ -> new TicketGrantingTicketImpl(
+                    new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                        .getNewTicketId(TicketGrantingTicket.PREFIX),
+                    authentication,
+                    NeverExpiresExpirationPolicy.INSTANCE))
+                .toList();
+            val registry = getNewTicketRegistry();
+
+            assertEquals(tickets, registry.addTicket(tickets.stream()));
+            val principalIndexKey = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(
+                RedisPrincipalIdentifierCodec.encode(principalId));
+            assertEquals(3, getCasRedisTemplates().getSessionsRedisTemplate()
+                .boundZSetOps(principalIndexKey).zCard());
+            assertEquals(3, registry.deleteTicketsFor(principalId));
+            tickets.forEach(ticket -> assertNull(registry.getTicket(ticket.getId())));
+        }
+
+        @RepeatedTest(1)
+        void verifyDeleteScriptResultsFailClosed() {
+            assertEquals(0, RedisTicketRegistry.requireDeleteScriptResult(
+                0L, 1, "test delete"));
+            assertEquals(1, RedisTicketRegistry.requireDeleteScriptResult(
+                1L, 1, "test delete"));
+            assertThrows(IllegalStateException.class,
+                () -> RedisTicketRegistry.requireDeleteScriptResult(
+                    null, 1, "test delete"));
+            assertThrows(IllegalStateException.class,
+                () -> RedisTicketRegistry.requireDeleteScriptResult(
+                    2L, 1, "test delete"));
+        }
+
+        @RepeatedTest(1)
+        void verifyPrincipalChangeMovesIndexAtomically() throws Throwable {
+            val oldPrincipal = UUID.randomUUID().toString();
+            val newPrincipal = UUID.randomUUID().toString();
+            val ticketId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            val registry = getNewTicketRegistry();
+            registry.addTicket(new TicketGrantingTicketImpl(
+                ticketId,
+                CoreAuthenticationTestUtils.getAuthentication(oldPrincipal),
+                NeverExpiresExpirationPolicy.INSTANCE));
+            registry.updateTicket(new TicketGrantingTicketImpl(
+                ticketId,
+                CoreAuthenticationTestUtils.getAuthentication(newPrincipal),
+                NeverExpiresExpirationPolicy.INSTANCE));
+
+            val oldIndex = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(
+                RedisPrincipalIdentifierCodec.encode(oldPrincipal));
+            val newIndex = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(
+                RedisPrincipalIdentifierCodec.encode(newPrincipal));
+            assertFalse(getCasRedisTemplates().getSessionsRedisTemplate().hasKey(oldIndex));
+            assertEquals(1, getCasRedisTemplates().getSessionsRedisTemplate()
+                .boundZSetOps(newIndex).zCard());
+            assertEquals(0, registry.countSessionsFor(oldPrincipal));
+            assertEquals(1, registry.countSessionsFor(newPrincipal));
+            assertEquals(0, registry.deleteTicketsFor(oldPrincipal));
+            assertEquals(1, registry.deleteTicketsFor(newPrincipal));
+            assertNull(registry.getTicket(ticketId));
+        }
+
+        @RepeatedTest(1)
+        void verifyPrincipalChangeCannotEscapePreviousPrincipalFence() throws Throwable {
+            val oldPrincipal = UUID.randomUUID().toString();
+            val newPrincipal = UUID.randomUUID().toString();
+            val ticketId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            val registry = getNewTicketRegistry();
+            registry.addTicket(new TicketGrantingTicketImpl(
+                ticketId,
+                CoreAuthenticationTestUtils.getAuthentication(oldPrincipal),
+                NeverExpiresExpirationPolicy.INSTANCE));
+            val token = UUID.randomUUID().toString();
+            principalMutationFence.acquire(oldPrincipal, token, Duration.ofSeconds(30));
+            val mappedOldPrincipal = RedisPrincipalIdentifierCodec.encode(oldPrincipal);
+            assertTrue(principalMutationFence.inspect(oldPrincipal).isPresent());
+            val storedOldPrincipal = getCasRedisTemplates().getTicketsRedisTemplate().execute(
+                (RedisCallback<byte[]>) connection -> connection.hashCommands().hGet(
+                    redisTicketKey(registry, ticketId).getBytes(StandardCharsets.UTF_8),
+                    RedisTicketDocument.FIELD_NAME_PRINCIPAL.getBytes(StandardCharsets.UTF_8)));
+            assertNotNull(storedOldPrincipal);
+            assertEquals(mappedOldPrincipal,
+                new String(storedOldPrincipal, StandardCharsets.UTF_8));
+            assertTrue(getCasRedisTemplates().getTicketsRedisTemplate().hasKey(
+                RedisPrincipalTicketMutationFenceKeyGenerator.forPrincipal(
+                    mappedOldPrincipal)));
+
+            assertThrows(RuntimeException.class, () -> registry.updateTicket(
+                new TicketGrantingTicketImpl(
+                    ticketId,
+                    CoreAuthenticationTestUtils.getAuthentication(newPrincipal),
+                    NeverExpiresExpirationPolicy.INSTANCE)));
+
+            val oldIndex = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(
+                mappedOldPrincipal);
+            val newIndex = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(
+                RedisPrincipalIdentifierCodec.encode(newPrincipal));
+            assertEquals(1, getCasRedisTemplates().getSessionsRedisTemplate()
+                .boundZSetOps(oldIndex).zCard());
+            assertFalse(getCasRedisTemplates().getSessionsRedisTemplate().hasKey(newIndex));
+            assertEquals(oldPrincipal, registry.getTicket(ticketId, TicketGrantingTicket.class)
+                .getAuthentication().getPrincipal().getId());
+            assertTrue(principalMutationFence.release(oldPrincipal, token));
+        }
+
+        @RepeatedTest(1)
+        void verifyExpiredAndMissingTicketsCleanIndex() throws Throwable {
+            val principalId = UUID.randomUUID().toString();
+            val registry = getNewTicketRegistry();
+            val expiringId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            registry.addTicket(new TicketGrantingTicketImpl(
+                expiringId,
+                CoreAuthenticationTestUtils.getAuthentication(principalId),
+                new TimeoutExpirationPolicy(1)));
+            val indexKey = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(
+                RedisPrincipalIdentifierCodec.encode(principalId));
+            assertNotNull(rawIndexScore(indexKey, redisTicketKey(registry, expiringId)));
+            await().atMost(3, TimeUnit.SECONDS).untilAsserted(() ->
+                assertFalse(getCasRedisTemplates().getSessionsRedisTemplate().hasKey(indexKey)));
+
+            val missingId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            registry.addTicket(new TicketGrantingTicketImpl(
+                missingId,
+                CoreAuthenticationTestUtils.getAuthentication(principalId),
+                NeverExpiresExpirationPolicy.INSTANCE));
+            assertTrue(ticketRedisTemplate.delete(redisTicketKey(registry, missingId)));
+            assertEquals(0, registry.deleteTicketsFor(principalId));
+            assertFalse(getCasRedisTemplates().getSessionsRedisTemplate().hasKey(indexKey));
+            await().atMost(3, TimeUnit.SECONDS).untilAsserted(() ->
+                assertEquals(0, registry.countSessionsFor(principalId)));
+        }
+
+        @RepeatedTest(1)
+        void verifyCorruptTicketFailsClosedWithoutConsumingIndex() throws Throwable {
+            val principalId = UUID.randomUUID().toString();
+            val registry = getNewTicketRegistry();
+            val ticketId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            registry.addTicket(new TicketGrantingTicketImpl(
+                ticketId,
+                CoreAuthenticationTestUtils.getAuthentication(principalId),
+                NeverExpiresExpirationPolicy.INSTANCE));
+            val ticketKey = redisTicketKey(registry, ticketId);
+            assertTrue(ticketRedisTemplate.delete(ticketKey));
+            getCasRedisTemplates().getSessionsRedisTemplate().opsForValue().set(ticketKey, "corrupt");
+            val indexKey = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(
+                RedisPrincipalIdentifierCodec.encode(principalId));
+
+            assertThrows(RuntimeException.class, () -> registry.deleteTicketsFor(principalId));
+            assertEquals("corrupt", getCasRedisTemplates().getSessionsRedisTemplate()
+                .opsForValue().get(ticketKey));
+            assertEquals(1, getCasRedisTemplates().getSessionsRedisTemplate()
+                .boundZSetOps(indexKey).zCard());
+        }
+
+        @RepeatedTest(1)
+        void verifyMissingPrincipalFailsClosedWithoutOrphaningTicket() throws Throwable {
+            val principalId = UUID.randomUUID().toString();
+            val registry = getNewTicketRegistry();
+            val ticketId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            registry.addTicket(new TicketGrantingTicketImpl(
+                ticketId,
+                CoreAuthenticationTestUtils.getAuthentication(principalId),
+                NeverExpiresExpirationPolicy.INSTANCE));
+            val ticketKey = redisTicketKey(registry, ticketId);
+            assertEquals(1, ticketRedisTemplate.boundHashOps(ticketKey)
+                .delete(RedisTicketDocument.FIELD_NAME_PRINCIPAL));
+            val indexKey = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(
+                RedisPrincipalIdentifierCodec.encode(principalId));
+
+            assertThrows(RuntimeException.class, () -> registry.deleteTicketsFor(principalId));
+            assertTrue(ticketRedisTemplate.hasKey(ticketKey));
+            assertEquals(1, getCasRedisTemplates().getSessionsRedisTemplate()
+                .boundZSetOps(indexKey).zCard());
+        }
+
+        @RepeatedTest(1)
+        void verifyBoundedDeletionAndConcurrentCutover() throws Throwable {
+            val principalId = UUID.randomUUID().toString();
+            val registry = getNewTicketRegistry();
+            val identifiers = Collections.synchronizedList(new ArrayList<String>());
+            val started = new CountDownLatch(1);
+            val writer = Thread.ofVirtual().start(() -> {
+                for (var index = 0; index < 125; index++) {
+                    val ticketId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                        .getNewTicketId(TicketGrantingTicket.PREFIX);
+                    FunctionUtils.doUnchecked(_ -> registry.addTicket(new TicketGrantingTicketImpl(
+                        ticketId,
+                        CoreAuthenticationTestUtils.getAuthentication(principalId),
+                        NeverExpiresExpirationPolicy.INSTANCE)));
+                    identifiers.add(ticketId);
+                    started.countDown();
+                }
+            });
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            val firstPass = registry.deleteTicketsFor(principalId);
+            writer.join();
+            val secondPass = registry.deleteTicketsFor(principalId);
+
+            assertEquals(125, firstPass + secondPass);
+            assertEquals(0, registry.deleteTicketsFor(principalId));
+            identifiers.forEach(identifier -> assertNull(registry.getTicket(identifier)));
+        }
+
+        @RepeatedTest(1)
+        void verifyDeleteAllFencesConcurrentWriters() throws Throwable {
+            val principalId = UUID.randomUUID().toString();
+            val authentication = CoreAuthenticationTestUtils.getAuthentication(principalId);
+            val registry = getNewTicketRegistry();
+            val seedTickets = IntStream.range(0, 250)
+                .mapToObj(_ -> new TicketGrantingTicketImpl(
+                    new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                        .getNewTicketId(TicketGrantingTicket.PREFIX),
+                    authentication,
+                    NeverExpiresExpirationPolicy.INSTANCE))
+                .toList();
+            registry.addTicket(seedTickets.stream());
+
+            val successfulWrites = Collections.synchronizedList(new ArrayList<String>());
+            val start = new CountDownLatch(1);
+            val writer = Thread.ofVirtual().start(() -> {
+                FunctionUtils.doUnchecked(_ -> start.await());
+                for (var index = 0; index < 500; index++) {
+                    val ticketId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                        .getNewTicketId(TicketGrantingTicket.PREFIX);
+                    try {
+                        FunctionUtils.doUnchecked(_ -> registry.addTicket(
+                            new TicketGrantingTicketImpl(
+                                ticketId,
+                                authentication,
+                                NeverExpiresExpirationPolicy.INSTANCE)));
+                        successfulWrites.add(ticketId);
+                    } catch (final Exception ignored) {
+                        /*
+                         * Registry-wide deletion intentionally rejects
+                         * overlapping writes.
+                         */
+                    }
+                }
+            });
+            start.countDown();
+            registry.deleteAll();
+            writer.join();
+
+            val liveTickets = successfulWrites.stream()
+                .filter(ticketId -> registry.getTicket(ticketId) != null)
+                .count();
+            assertEquals(liveTickets, registry.deleteTicketsFor(principalId));
+            successfulWrites.forEach(ticketId -> assertNull(registry.getTicket(ticketId)));
+        }
+
+        @RepeatedTest(1)
+        void verifyStaleRegistryAndRebuildLeasesCannotMutateRedis() throws Throwable {
+            val principalId = UUID.randomUUID().toString();
+            val registry = getNewTicketRegistry();
+            val ticketId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            registry.addTicket(new TicketGrantingTicketImpl(
+                ticketId,
+                CoreAuthenticationTestUtils.getAuthentication(principalId),
+                NeverExpiresExpirationPolicy.INSTANCE));
+            val concreteRegistry = (RedisTicketRegistry) AopTestUtils.getTargetObject(registry);
+            val principalTicketIndex = concreteRegistry.getPrincipalTicketIndex();
+            val indexTemplate = getCasRedisTemplates().getSessionsRedisTemplate();
+            val ticketKey = redisTicketKey(registry, ticketId);
+            val ticketGenerator = redisKeyGeneratorFactory
+                .getRedisKeyGenerator(TicketGrantingTicket.PREFIX)
+                .orElseThrow();
+            val principalIndexKey = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(
+                RedisPrincipalIdentifierCodec.encode(principalId));
+
+            val staleDeleteLease = principalTicketIndex.beginRegistryDelete();
+            try {
+                indexTemplate.opsForValue().set(
+                    RedisPrincipalTicketIndexKeyGenerator.MUTATION_FENCE_KEY,
+                    "replacement-owner", Duration.ofMinutes(5));
+                assertThrows(RuntimeException.class, () -> principalTicketIndex.deleteKeysOnPrimary(
+                    ticketRedisTemplate, ticketKey, staleDeleteLease));
+                assertTrue(ticketRedisTemplate.hasKey(ticketKey));
+                assertThrows(RuntimeException.class, () -> principalTicketIndex.deleteExactKeysOnPrimary(
+                    ticketRedisTemplate, Set.of(ticketGenerator.getKeyspace()), staleDeleteLease));
+                assertTrue(ticketRedisTemplate.hasKey(ticketGenerator.getKeyspace()));
+            } finally {
+                indexTemplate.delete(RedisPrincipalTicketIndexKeyGenerator.MUTATION_FENCE_KEY);
+                indexTemplate.opsForValue().set(
+                    RedisPrincipalTicketIndexKeyGenerator.READY_KEY,
+                    RedisPrincipalTicketIndexKeyGenerator.SCHEMA_VERSION);
+            }
+
+            assertTrue(indexTemplate.delete(principalIndexKey));
+            assertTrue(indexTemplate.delete(RedisPrincipalTicketIndexKeyGenerator.READY_KEY));
+            indexTemplate.opsForValue().set(
+                RedisPrincipalTicketIndexKeyGenerator.REBUILD_LOCK_KEY,
+                "replacement-owner", Duration.ofMinutes(5));
+            try {
+                assertThrows(RuntimeException.class, () -> principalTicketIndex.rebuildPage(
+                    "0", ticketKey, "stale-rebuild-owner"));
+                assertFalse(indexTemplate.hasKey(principalIndexKey));
+                assertTrue(ticketRedisTemplate.hasKey(ticketKey));
+            } finally {
+                indexTemplate.delete(RedisPrincipalTicketIndexKeyGenerator.REBUILD_LOCK_KEY);
+                indexTemplate.opsForValue().set(
+                    RedisPrincipalTicketIndexKeyGenerator.READY_KEY,
+                    RedisPrincipalTicketIndexKeyGenerator.SCHEMA_VERSION);
+            }
+        }
+
+        @RepeatedTest(1)
+        void verifyPrincipalDeletePagesFailClosedWhenRegistryFenceInterleaves() throws Throwable {
+            val principalId = UUID.randomUUID().toString();
+            val registry = getNewTicketRegistry();
+            val ticketId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            registry.addTicket(new TicketGrantingTicketImpl(
+                ticketId,
+                CoreAuthenticationTestUtils.getAuthentication(principalId),
+                NeverExpiresExpirationPolicy.INSTANCE));
+            val concreteRegistry = (RedisTicketRegistry) AopTestUtils.getTargetObject(registry);
+            val target = RedisPrincipalIdentifierCodec.encode(principalId);
+            val principalIndexKey = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(target);
+            val principalGenerator = redisKeyGeneratorFactory
+                .getRedisKeyGenerator(Principal.class.getName())
+                .orElseThrow();
+            val ticketGenerator = redisKeyGeneratorFactory
+                .getRedisKeyGenerator(TicketGrantingTicket.PREFIX)
+                .orElseThrow();
+            val ticketKey = redisTicketKey(registry, ticketId);
+            val documentId = RedisKeyGenerator.parse(ticketKey).getId();
+            val ticketToDelete = new RedisTicketRegistry.RedisTicketToDelete(
+                ticketKey, documentId, documentId, ticketGenerator.getKeyspace(), documentId, true);
+            assertEquals(List.of(ticketKey),
+                concreteRegistry.loadPrincipalTicketBatch(principalIndexKey));
+
+            val principalTicketIndex = concreteRegistry.getPrincipalTicketIndex();
+            val deleteLease = principalTicketIndex.beginRegistryDelete();
+            var completed = false;
+            try {
+                assertThrows(RuntimeException.class,
+                    () -> concreteRegistry.loadPrincipalTicketBatch(principalIndexKey));
+                assertThrows(RuntimeException.class,
+                    () -> concreteRegistry.loadPrincipalTicketBatch(
+                        RedisPrincipalTicketIndexKeyGenerator.forPrincipal("absent-principal")),
+                    "An empty terminal page must not bypass the READY/fence check");
+                assertThrows(RuntimeException.class, () -> concreteRegistry.deletePrincipalTicketBatch(
+                    target, principalIndexKey, principalGenerator.forId(target), List.of(ticketToDelete)));
+                assertTrue(ticketRedisTemplate.hasKey(ticketKey));
+                principalTicketIndex.completeRegistryDelete(deleteLease);
+                completed = true;
+            } finally {
+                if (!completed) {
+                    principalTicketIndex.abortRegistryDelete(deleteLease);
+                }
+            }
+            assertNotNull(registry.getTicket(ticketId));
+        }
+
+        @RepeatedTest(1)
+        void verifyLegacyRebuildCutoverAndReadinessFence() throws Throwable {
+            val principalId = UUID.randomUUID().toString();
+            val registry = getNewTicketRegistry();
+            val ticketId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            registry.addTicket(new TicketGrantingTicketImpl(
+                ticketId,
+                CoreAuthenticationTestUtils.getAuthentication(principalId),
+                NeverExpiresExpirationPolicy.INSTANCE));
+            val indexTemplate = getCasRedisTemplates().getSessionsRedisTemplate();
+            val indexKey = RedisPrincipalTicketIndexKeyGenerator.forPrincipal(
+                RedisPrincipalIdentifierCodec.encode(principalId));
+            assertTrue(indexTemplate.delete(indexKey));
+            addRawIndexMember(indexKey, redisTicketKey(registry, ticketId), 1);
+            assertTrue(indexTemplate.delete(RedisPrincipalTicketIndexKeyGenerator.READY_KEY));
+
+            val concreteRegistry = (RedisTicketRegistry) AopTestUtils.getTargetObject(registry);
+            assertThrows(IllegalStateException.class,
+                () -> registry.deleteTicketsFor(principalId));
+            val allTickets = redisKeyGeneratorFactory
+                .getRedisKeyGenerator(Ticket.class.getName())
+                .orElseThrow()
+                .forEverything();
+            indexTemplate.opsForValue().set(
+                RedisPrincipalTicketIndexKeyGenerator.REBUILD_LOCK_KEY,
+                "crashed-owner",
+                Duration.ofMillis(250));
+            concreteRegistry.getPrincipalTicketIndex().rebuildIfNecessary(allTickets);
+            assertThrows(IllegalStateException.class,
+                () -> registry.deleteTicketsFor(principalId));
+            await().atMost(10, TimeUnit.SECONDS).untilAsserted(() ->
+                assertEquals(RedisPrincipalTicketIndexKeyGenerator.SCHEMA_VERSION,
+                    rawString(RedisPrincipalTicketIndexKeyGenerator.READY_KEY)));
+            assertTrue(Objects.requireNonNull(
+                rawIndexScore(indexKey, redisTicketKey(registry, ticketId)))
+                > Instant.now().toEpochMilli());
+            assertEquals(1, registry.deleteTicketsFor(principalId));
+            assertNull(registry.getTicket(ticketId));
+        }
+
+        @RepeatedTest(1)
+        void verifyRebuildRejectsPrincipalTicketWithoutExpiration() {
+            val principalId = UUID.randomUUID().toString();
+            val registry = getNewTicketRegistry();
+            val ticketId = new TicketGrantingTicketIdGenerator(10, StringUtils.EMPTY)
+                .getNewTicketId(TicketGrantingTicket.PREFIX);
+            val ticketKey = redisTicketKey(registry, ticketId);
+            val indexTemplate = getCasRedisTemplates().getSessionsRedisTemplate();
+            val principal = RedisPrincipalIdentifierCodec.encode(principalId);
+            ticketRedisTemplate.execute((RedisCallback<Boolean>) connection ->
+                connection.hashCommands().hSet(
+                    ticketKey.getBytes(StandardCharsets.UTF_8),
+                    RedisTicketDocument.FIELD_NAME_PRINCIPAL.getBytes(StandardCharsets.UTF_8),
+                    principal.getBytes(StandardCharsets.UTF_8)));
+            assertEquals(-1, ticketRedisTemplate.getExpire(ticketKey));
+            assertTrue(indexTemplate.delete(RedisPrincipalTicketIndexKeyGenerator.READY_KEY));
+
+            val concreteRegistry = (RedisTicketRegistry) AopTestUtils.getTargetObject(registry);
+            val allTickets = redisKeyGeneratorFactory
+                .getRedisKeyGenerator(Ticket.class.getName())
+                .orElseThrow()
+                .forEverything();
+            assertThrows(RuntimeException.class,
+                () -> concreteRegistry.getPrincipalTicketIndex().rebuildIfNecessary(allTickets));
+            assertNull(rawString(RedisPrincipalTicketIndexKeyGenerator.READY_KEY));
+            assertTrue(ticketRedisTemplate.hasKey(ticketKey));
+
+            assertTrue(ticketRedisTemplate.delete(ticketKey));
+            concreteRegistry.getPrincipalTicketIndex().rebuildIfNecessary(allTickets);
+            assertEquals(RedisPrincipalTicketIndexKeyGenerator.SCHEMA_VERSION,
+                rawString(RedisPrincipalTicketIndexKeyGenerator.READY_KEY));
+        }
+
+        private String redisTicketKey(final TicketRegistry registry,
+                                      final String ticketId) {
+            val prefix = StringUtils.substringBefore(ticketId, '-');
+            val keyGenerator = redisKeyGeneratorFactory
+                .getRedisKeyGenerator(prefix)
+                .orElseThrow();
+            return keyGenerator.forPrefixAndId(prefix, registry.digestIdentifier(ticketId));
+        }
+
+        private void addRawIndexMember(final String indexKey,
+                                       final String member,
+                                       final double score) {
+            getCasRedisTemplates().getSessionsRedisTemplate().execute(
+                (RedisCallback<Boolean>) connection -> connection.zSetCommands().zAdd(
+                    indexKey.getBytes(StandardCharsets.UTF_8),
+                    score,
+                    member.getBytes(StandardCharsets.UTF_8)));
+        }
+
+        private Double rawIndexScore(final String indexKey,
+                                     final String member) {
+            return getCasRedisTemplates().getSessionsRedisTemplate().execute(
+                (RedisCallback<Double>) connection -> connection.zSetCommands().zScore(
+                    indexKey.getBytes(StandardCharsets.UTF_8),
+                    member.getBytes(StandardCharsets.UTF_8)));
+        }
+
+        private String rawString(final String key) {
+            val value = getCasRedisTemplates().getSessionsRedisTemplate().execute(
+                (RedisCallback<byte[]>) connection -> connection.stringCommands().get(
+                    key.getBytes(StandardCharsets.UTF_8)));
+            return value == null ? null : new String(value, StandardCharsets.UTF_8);
         }
     }
 
@@ -247,6 +838,7 @@ class RedisServerTicketRegistryTests {
                 .getNewTicketId(TicketGrantingTicket.PREFIX);
             val tgt = new TicketGrantingTicketImpl(tgtId, authentication, NeverExpiresExpirationPolicy.INSTANCE);
             getNewTicketRegistry().addTicket(tgt);
+            assertNotNull(getNewTicketRegistry().getTicket(tgtId));
 
             val cacheKey = getNewTicketRegistry().digestIdentifier(tgt.getId());
             assertNotNull(redisTicketRegistryCache.getIfPresent(cacheKey));
@@ -419,6 +1011,7 @@ class RedisServerTicketRegistryTests {
         "cas.ticket.registry.redis.port=6379",
         "cas.ticket.registry.redis.pool.max-active=20",
         "cas.ticket.registry.redis.pool.enabled=true",
+        "cas.ticket.registry.redis.enable-redis-search=false",
         "cas.ticket.registry.redis.crypto.enabled=true"
     })
     @ExtendWith(CasTestExtension.class)
@@ -451,6 +1044,7 @@ class RedisServerTicketRegistryTests {
         "cas.ticket.tgt.core.service-tracking-policy=ALL",
         "cas.ticket.registry.redis.host=localhost",
         "cas.ticket.registry.redis.port=6379",
+        "cas.ticket.registry.redis.enable-redis-search=false",
         "cas.ticket.registry.redis.crypto.enabled=false"
     })
     @ExtendWith(CasTestExtension.class)
@@ -464,19 +1058,56 @@ class RedisServerTicketRegistryTests {
         private CasRedisTemplate<String, RedisTicketDocument> ticketRedisTemplate;
 
         @Autowired
+        @Qualifier("sessionsRedisTemplate")
+        private CasRedisTemplate<String, String> sessionsRedisTemplate;
+
+        @Autowired
         @Qualifier(RedisKeyGeneratorFactory.BEAN_NAME)
         private RedisKeyGeneratorFactory redisKeyGeneratorFactory;
 
+        @Autowired
+        @Qualifier(RedisPrincipalTicketMutationFence.BEAN_NAME)
+        private RedisPrincipalTicketMutationFence principalMutationFence;
+
         @Test
         void verifyDifferentLoginSamePrincipal() throws Throwable {
-            val principalId = UUID.randomUUID().toString();
+            val principalId = "Sensitive.User+" + UUID.randomUUID() + "@Example.ORG";
             for (var i = 0; i < 3; i++) {
                 addTicketAndWait(principalId);
             }
+            val mappedPrincipal = RedisPrincipalIdentifierCodec.encode(principalId);
             val keyGenerator = redisKeyGeneratorFactory.getRedisKeyGenerator(Principal.class.getName()).orElseThrow();
-            val key = keyGenerator.forId(principalId);
-            assertEquals(1, ticketRedisTemplate.boundZSetOps(key).size());
-            assertEquals(1, ticketRegistry.countSessionsFor(principalId));
+            val key = keyGenerator.forId(mappedPrincipal);
+            await().atMost(3, TimeUnit.SECONDS).untilAsserted(() ->
+                assertEquals(1, ticketRegistry.countSessionsFor(principalId)));
+            assertEquals(0, ticketRegistry.countSessionsFor(
+                principalId.toLowerCase(Locale.ROOT)));
+            assertEquals(1, sessionsRedisTemplate.boundZSetOps(key).size());
+
+            val principalIndexKey = RedisPrincipalTicketIndexKeyGenerator
+                .forPrincipal(mappedPrincipal);
+            val registry = (RedisTicketRegistry) AopTestUtils.getTargetObject(ticketRegistry);
+            val indexedTickets = registry.loadPrincipalTicketBatch(principalIndexKey);
+            assertFalse(indexedTickets.isEmpty());
+            indexedTickets.forEach(indexedTicket -> {
+                val storedPrincipal = ticketRedisTemplate.execute(
+                    (RedisCallback<byte[]>) connection -> connection.hashCommands().hGet(
+                        indexedTicket.getBytes(StandardCharsets.UTF_8),
+                        RedisTicketDocument.FIELD_NAME_PRINCIPAL.getBytes(StandardCharsets.UTF_8)));
+                assertNotNull(storedPrincipal);
+                assertEquals(mappedPrincipal,
+                    new String(storedPrincipal, StandardCharsets.UTF_8));
+            });
+
+            val fenceKey = principalMutationFence.keyForPrincipal(principalId);
+            assertEquals(
+                RedisPrincipalTicketMutationFenceKeyGenerator.forPrincipal(mappedPrincipal),
+                fenceKey);
+            assertNotEquals(fenceKey, principalMutationFence.keyForPrincipal(
+                principalId.toLowerCase(Locale.ROOT)));
+            assertFalse(principalIndexKey.toLowerCase(Locale.ROOT).contains("sensitive.user"));
+            assertFalse(key.toLowerCase(Locale.ROOT).contains("sensitive.user"));
+            assertFalse(fenceKey.toLowerCase(Locale.ROOT).contains("sensitive.user"));
         }
 
         private void addTicketAndWait(final String principalId) throws Throwable {

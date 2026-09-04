@@ -12,7 +12,9 @@ import org.apereo.cas.redis.modules.LettuceRedisModulesOperations;
 import org.apereo.cas.ticket.Ticket;
 import org.apereo.cas.ticket.TicketCatalog;
 import org.apereo.cas.ticket.registry.CachedTicketExpirationPolicy;
+import org.apereo.cas.ticket.registry.DefaultRedisPrincipalTicketMutationFence;
 import org.apereo.cas.ticket.registry.DefaultTicketRegistry;
+import org.apereo.cas.ticket.registry.RedisPrincipalTicketMutationFence;
 import org.apereo.cas.ticket.registry.RedisTicketDocument;
 import org.apereo.cas.ticket.registry.RedisTicketRegistry;
 import org.apereo.cas.ticket.registry.RedisTicketRegistryCacheEndpoint;
@@ -234,6 +236,15 @@ public class CasRedisTicketRegistryAutoConfiguration {
             @Qualifier("sessionsRedisTemplate")
             final CasRedisTemplate<String, String> sessionsRedisTemplate) {
             return new RedisTicketRegistry.CasRedisTemplates(ticketRedisTemplate, sessionsRedisTemplate);
+        }
+
+        @Bean(name = RedisPrincipalTicketMutationFence.BEAN_NAME)
+        @RefreshScope(proxyMode = ScopedProxyMode.DEFAULT)
+        @ConditionalOnMissingBean(name = RedisPrincipalTicketMutationFence.BEAN_NAME)
+        public RedisPrincipalTicketMutationFence redisPrincipalTicketMutationFence(
+            @Qualifier("sessionsRedisTemplate")
+            final CasRedisTemplate<String, String> sessionsRedisTemplate) {
+            return new DefaultRedisPrincipalTicketMutationFence(sessionsRedisTemplate);
         }
 
         @Bean

@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import socket
 import socketserver
 import subprocess
@@ -55,6 +56,97 @@ class ReleaseDriverSourceTests(unittest.TestCase):
         self.assertIn("--tests org.apereo.cas.protocol", exact_tests)
         self.assertNotIn("\n        build \\\n", exact_tests)
 
+    def test_each_exact_filter_is_bound_to_its_intended_task(self) -> None:
+        build_block = self.source.split("build_candidate() {", 1)[1].split(
+            "\nnormalize_resolved_sbom() {", 1
+        )[0]
+        exact_tests = build_block.split(
+            "# Run the exact security regression inventory separately.", 1
+        )[1]
+        invocation = exact_tests.split(
+            './gradlew "${GRADLE_COMMON_ARGUMENTS[@]}" \\\n', 1
+        )[1].split("\n    verify_supply_chain_inputs_unchanged", 1)[0]
+        actual: dict[str, list[str]] = {}
+        current_task: str | None = None
+        for line in invocation.splitlines():
+            token = line.strip().removesuffix("\\").strip()
+            if token.startswith(":"):
+                current_task = token
+                actual[current_task] = []
+            elif token.startswith("--tests "):
+                self.assertIsNotNone(current_task)
+                actual[current_task].append(token.removeprefix("--tests "))
+
+        expected = {
+            ":api:cas-server-core-api-protocol:testCAS": [
+                "org.apereo.cas.protocol.ProtocolFinalResponsePolicyTests",
+                "org.apereo.cas.protocol.ProtocolFinalResponseBundleTests",
+            ],
+            ":api:cas-server-core-api-ticket:testTickets": [
+                "org.apereo.cas.ticket.registry.TicketIssuanceReadContextTests",
+                "org.apereo.cas.ticket.registry.TicketIssuanceWriteContextTests",
+            ],
+            ":core:cas-server-core-cookie-api:testCookie": [
+                "org.apereo.cas.web.support.mgmr.EncryptedCookieValueManagerTests"
+            ],
+            ":core:cas-server-core-cookie:testCookie": [
+                "org.apereo.cas.web.support.CookieRetrievingCookieGeneratorTests"
+            ],
+            ":core:cas-server-core-services-authentication:testAuthentication": [
+                "org.apereo.cas.authentication.principal.DefaultResponseTests"
+            ],
+            ":core:cas-server-core-tickets-api:testTickets": [
+                "org.apereo.cas.ticket.registry.AbstractTicketRegistryIssuancePolicyTests"
+            ],
+            ":core:cas-server-core-web:testUtility": [
+                "org.apereo.cas.web.support.WebUtilsTests"
+            ],
+            ":core:cas-server-core-web:testWeb": [
+                "org.apereo.cas.config.CasCoreWebFinalResponsePolicyTests"
+            ],
+            ":core:cas-server-core-webflow-api:testWebflowActions": [
+                "org.apereo.cas.web.flow.actions."
+                "CasProtocolFinalResponseDeliveryBuilderTests"
+            ],
+            ":core:cas-server-core-webflow:testWebflowAuthenticationActions": [
+                "org.apereo.cas.web.flow.actions.BrowserStorageActionTests"
+            ],
+            ":core:cas-server-core-webflow:testWebflowServiceActions": [
+                "org.apereo.cas.web.flow.actions.RedirectToServiceActionTests"
+            ],
+            ":support:cas-server-support-actions:testWebflowActions": [
+                "org.apereo.cas.web.flow.SendTicketGrantingTicketActionTests",
+                "org.apereo.cas.web.flow.FetchTicketGrantingTicketActionTests",
+            ],
+            ":support:cas-server-support-redis-core:testRedis": [
+                "org.apereo.cas.redis.core.RedisAccountSecurityKeyCodecTests",
+                "org.apereo.cas.redis.core.RedisAccountSecurityDeletionFenceTests",
+                "org.apereo.cas.redis.core."
+                "RedisAccountSecurityDeletionFenceStoreVerifierTests",
+            ],
+            ":support:cas-server-support-redis-ticket-registry:testRedis": [
+                "org.apereo.cas.ticket.registry.key.DigestingRedisLockRegistryTests",
+                "org.apereo.cas.ticket.registry.RedisTicketRegistryWriteInterceptorTests",
+                "org.apereo.cas.ticket.registry.sub."
+                "DefaultRedisTicketRegistryMessageListenerTests",
+                "'org.apereo.cas.ticket.registry."
+                "RedisServerTicketRegistryTests$WithoutRedisModulesTests'",
+            ],
+            ":support:cas-server-support-redis-ticket-registry:testSimple": [
+                "org.apereo.cas.ticket.registry.RedisTicketRegistryWriteExecutorTests"
+            ],
+            ":support:cas-server-support-trusted-mfa-redis:testRedis": [
+                "org.apereo.cas.trusted.authentication.storage."
+                "RedisMultifactorAuthenticationTrustStorageTests",
+                "org.apereo.cas.trusted.authentication.storage."
+                "RedisTrustedMfaRecordLocatorTests",
+            ],
+            ":support:cas-server-support-webauthn-redis:testRedis": [
+                "org.apereo.cas.webauthn.RedisWebAuthnCredentialRepositoryTests"
+            ],
+        }
+        self.assertEqual(expected, actual)
+
     def test_core_web_compatibility_regression_is_in_exact_inventory(self) -> None:
         build_block = self.source.split("build_candidate() {", 1)[1].split(
             "\nnormalize_resolved_sbom() {", 1
@@ -92,6 +184,80 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             "DigestingRedisLockRegistryTests.xml:1",
             build_block,
         )
+
+    def test_account_security_inventory_is_exactly_26_suites_and_348_tests(
+        self,
+    ) -> None:
+        build_block = self.source.split("build_candidate() {", 1)[1].split(
+            "\nnormalize_resolved_sbom() {", 1
+        )[0]
+        required_tasks = (
+            ":support:cas-server-support-redis-core:testRedis",
+            ":support:cas-server-support-redis-ticket-registry:testRedis",
+            ":support:cas-server-support-redis-ticket-registry:testSimple",
+            ":support:cas-server-support-trusted-mfa-redis:testRedis",
+            ":support:cas-server-support-webauthn-redis:testRedis",
+        )
+        required_filters = (
+            "org.apereo.cas.redis.core.RedisAccountSecurityKeyCodecTests",
+            "org.apereo.cas.redis.core.RedisAccountSecurityDeletionFenceTests",
+            "org.apereo.cas.redis.core."
+            "RedisAccountSecurityDeletionFenceStoreVerifierTests",
+            "'org.apereo.cas.ticket.registry."
+            "RedisServerTicketRegistryTests$WithoutRedisModulesTests'",
+            "org.apereo.cas.ticket.registry.RedisTicketRegistryWriteExecutorTests",
+            "org.apereo.cas.trusted.authentication.storage."
+            "RedisMultifactorAuthenticationTrustStorageTests",
+            "org.apereo.cas.trusted.authentication.storage."
+            "RedisTrustedMfaRecordLocatorTests",
+            "org.apereo.cas.webauthn.RedisWebAuthnCredentialRepositoryTests",
+        )
+        for task in required_tasks:
+            self.assertEqual(1, build_block.count(f"{task} \\\n"))
+        for test_filter in required_filters:
+            self.assertEqual(
+                1,
+                build_block.count(f"--tests {test_filter} \\\n"),
+            )
+
+        result_specs = re.findall(
+            r"--result '([^']+\.xml):([0-9]+)'",
+            build_block,
+        )
+        result_counts = {path: int(count) for path, count in result_specs}
+        self.assertEqual(26, len(result_specs))
+        self.assertEqual(26, len(result_counts))
+        self.assertEqual(348, sum(result_counts.values()))
+        expected_results = {
+            "support/cas-server-support-redis-core/build/test-results/testRedis/"
+            "TEST-org.apereo.cas.redis.core.RedisAccountSecurityKeyCodecTests.xml": 3,
+            "support/cas-server-support-redis-core/build/test-results/testRedis/"
+            "TEST-org.apereo.cas.redis.core."
+            "RedisAccountSecurityDeletionFenceTests.xml": 2,
+            "support/cas-server-support-redis-core/build/test-results/testRedis/"
+            "TEST-org.apereo.cas.redis.core."
+            "RedisAccountSecurityDeletionFenceStoreVerifierTests.xml": 2,
+            "support/cas-server-support-redis-ticket-registry/build/test-results/"
+            "testRedis/TEST-org.apereo.cas.ticket.registry."
+            "RedisTicketRegistryWriteInterceptorTests.xml": 80,
+            "support/cas-server-support-redis-ticket-registry/build/test-results/"
+            "testRedis/TEST-org.apereo.cas.ticket.registry."
+            "RedisServerTicketRegistryTests$WithoutRedisModulesTests.xml": 85,
+            "support/cas-server-support-redis-ticket-registry/build/test-results/"
+            "testSimple/TEST-org.apereo.cas.ticket.registry."
+            "RedisTicketRegistryWriteExecutorTests.xml": 4,
+            "support/cas-server-support-trusted-mfa-redis/build/test-results/"
+            "testRedis/TEST-org.apereo.cas.trusted.authentication.storage."
+            "RedisMultifactorAuthenticationTrustStorageTests.xml": 22,
+            "support/cas-server-support-trusted-mfa-redis/build/test-results/"
+            "testRedis/TEST-org.apereo.cas.trusted.authentication.storage."
+            "RedisTrustedMfaRecordLocatorTests.xml": 11,
+            "support/cas-server-support-webauthn-redis/build/test-results/"
+            "testRedis/TEST-org.apereo.cas.webauthn."
+            "RedisWebAuthnCredentialRepositoryTests.xml": 18,
+        }
+        for path, count in expected_results.items():
+            self.assertEqual(count, result_counts.get(path))
 
     def test_mutable_maven_metadata_is_removed_before_repository_audit(self) -> None:
         candidate_block = self.source.split(
@@ -153,7 +319,10 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             "core/cas-server-core-web/gradle.lockfile",
             "docs/cas-server-documentation-processor/gradle.lockfile",
             "support/cas-server-support-palantir/gradle.lockfile",
+            "support/cas-server-support-redis-core/gradle.lockfile",
             "support/cas-server-support-redis-ticket-registry/gradle.lockfile",
+            "support/cas-server-support-trusted-mfa-redis/gradle.lockfile",
+            "support/cas-server-support-webauthn-redis/gradle.lockfile",
             "webapp/cas-server-webapp/gradle.lockfile",
             "webapp/cas-server-webapp-native/gradle.lockfile",
             "webapp/cas-server-webapp-jetty/gradle.lockfile",
@@ -178,6 +347,7 @@ class ReleaseDriverSourceTests(unittest.TestCase):
             "readonly GRADLE_COMMON_ARGUMENTS=(", 1
         )[1].split("\n)", 1)[0]
         self.assertEqual(1, common_arguments.count("'-DCI=true'"))
+        self.assertEqual(1, common_arguments.count("'-DPTS_ENABLED=false'"))
         self.assertIn(
             "'-Porg.gradle.java.installations.auto-download=false'",
             common_arguments,
@@ -214,11 +384,18 @@ class ReleaseDriverSourceTests(unittest.TestCase):
         )
 
     def test_exact_redis_security_runtime_is_a_required_lock_state(self) -> None:
-        self.assertIn(
-            '":support:cas-server-support-redis-ticket-registry":'
-            '{"testRuntimeClasspath"}',
-            self.source.replace("\n", "").replace(" ", ""),
-        )
+        compact_source = self.source.replace("\n", "").replace(" ", "")
+        for project in (
+            "redis-core",
+            "redis-ticket-registry",
+            "trusted-mfa-redis",
+            "webauthn-redis",
+        ):
+            self.assertIn(
+                f'":support:cas-server-support-{project}":'
+                '{"testRuntimeClasspath"}',
+                compact_source,
+            )
 
     def test_palantir_release_runtime_is_a_required_lock_state(self) -> None:
         self.assertIn(
@@ -236,7 +413,10 @@ class LockUpdateHelperTests(unittest.TestCase):
             root / "core/cas-server-core-web",
             root / "docs/cas-server-documentation-processor",
             root / "support/cas-server-support-palantir",
+            root / "support/cas-server-support-redis-core",
             root / "support/cas-server-support-redis-ticket-registry",
+            root / "support/cas-server-support-trusted-mfa-redis",
+            root / "support/cas-server-support-webauthn-redis",
             root / "webapp/cas-server-webapp",
             root / "webapp/cas-server-webapp-native",
             root / "webapp/cas-server-webapp-jetty",
@@ -278,7 +458,10 @@ for path in \\
     core/cas-server-core-web/gradle.lockfile \\
     docs/cas-server-documentation-processor/gradle.lockfile \\
     support/cas-server-support-palantir/gradle.lockfile \\
+    support/cas-server-support-redis-core/gradle.lockfile \\
     support/cas-server-support-redis-ticket-registry/gradle.lockfile \\
+    support/cas-server-support-trusted-mfa-redis/gradle.lockfile \\
+    support/cas-server-support-webauthn-redis/gradle.lockfile \\
     webapp/cas-server-webapp/gradle.lockfile \\
     webapp/cas-server-webapp-native/gradle.lockfile \\
     webapp/cas-server-webapp-jetty/gradle.lockfile \\
@@ -308,7 +491,13 @@ printf 'incidental-settings-lock\\n' > settings-gradle.lockfile
                 all(
                     ":support:cas-server-support-palantir:dependencies"
                     in line
+                    and ":support:cas-server-support-redis-core:dependencies"
+                    in line
                     and ":support:cas-server-support-redis-ticket-registry:dependencies"
+                    in line
+                    and ":support:cas-server-support-trusted-mfa-redis:dependencies"
+                    in line
+                    and ":support:cas-server-support-webauthn-redis:dependencies"
                     in line
                     for line in graph_invocations
                 )
@@ -322,7 +511,7 @@ printf 'incidental-settings-lock\\n' > settings-gradle.lockfile
             )
             self.assertFalse((root / "settings-gradle.lockfile").exists())
             self.assertIn(
-                "All nine strict dependency locks are byte-stable.", result.stdout
+                "All twelve strict dependency locks are byte-stable.", result.stdout
             )
 
     def test_preflight_rejects_lock_symlink_before_gradle_runs(self) -> None:
@@ -361,7 +550,10 @@ for path in \\
     core/cas-server-core-web/gradle.lockfile \\
     docs/cas-server-documentation-processor/gradle.lockfile \\
     support/cas-server-support-palantir/gradle.lockfile \\
+    support/cas-server-support-redis-core/gradle.lockfile \\
     support/cas-server-support-redis-ticket-registry/gradle.lockfile \\
+    support/cas-server-support-trusted-mfa-redis/gradle.lockfile \\
+    support/cas-server-support-webauthn-redis/gradle.lockfile \\
     webapp/cas-server-webapp/gradle.lockfile \\
     webapp/cas-server-webapp-native/gradle.lockfile \\
     webapp/cas-server-webapp-jetty/gradle.lockfile \\

@@ -5,6 +5,9 @@ import org.apereo.cas.authentication.CasSSLContext;
 import org.apereo.cas.configuration.CasConfigurationProperties;
 import org.apereo.cas.configuration.features.CasFeatureModule;
 import org.apereo.cas.redis.core.CasRedisTemplate;
+import org.apereo.cas.redis.core.RedisAccountSecurityDeletionFence;
+import org.apereo.cas.redis.core.RedisAccountSecurityKeyCodec;
+import org.apereo.cas.redis.core.RedisAccountSecurityStore;
 import org.apereo.cas.redis.core.RedisObjectFactory;
 import org.apereo.cas.trusted.authentication.api.MultifactorAuthenticationTrustRecord;
 import org.apereo.cas.trusted.authentication.api.MultifactorAuthenticationTrustRecordKeyGenerator;
@@ -16,9 +19,11 @@ import org.apereo.cas.util.spring.beans.BeanSupplier;
 import org.apereo.cas.util.spring.boot.ConditionalOnFeatureEnabled;
 import lombok.val;
 import org.jooq.lambda.Unchecked;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.context.ConfigurableApplicationContext;
@@ -70,6 +75,17 @@ public class CasRedisMultifactorAuthenticationTrustAutoConfiguration {
             .get();
     }
 
+    @Bean(name = RedisAccountSecurityDeletionFence.TRUSTED_MFA_BEAN_NAME)
+    @ConditionalOnMissingBean(name = RedisAccountSecurityDeletionFence.TRUSTED_MFA_BEAN_NAME)
+    @ConditionalOnProperty(prefix = "cas.authn.mfa.trusted.redis", name = "enabled",
+        havingValue = "true", matchIfMissing = true)
+    public RedisAccountSecurityDeletionFence trustedMfaRedisAccountSecurityDeletionFence(
+        @Qualifier("redisMfaTrustedAuthnTemplate")
+        final CasRedisTemplate<String, List<MultifactorAuthenticationTrustRecord>> redisTemplate,
+        final RedisAccountSecurityKeyCodec keyCodec) {
+        return new RedisAccountSecurityDeletionFence(redisTemplate, keyCodec);
+    }
+
     @RefreshScope(proxyMode = ScopedProxyMode.DEFAULT)
     @Bean
     public MultifactorAuthenticationTrustStorage mfaTrustEngine(
@@ -80,12 +96,28 @@ public class CasRedisMultifactorAuthenticationTrustAutoConfiguration {
         @Qualifier("mfaTrustRecordKeyGenerator")
         final MultifactorAuthenticationTrustRecordKeyGenerator keyGenerationStrategy,
         @Qualifier("mfaTrustCipherExecutor")
-        final CipherExecutor mfaTrustCipherExecutor) {
+        final CipherExecutor mfaTrustCipherExecutor,
+        @Qualifier(RedisAccountSecurityDeletionFence.TRUSTED_MFA_BEAN_NAME)
+        final ObjectProvider<RedisAccountSecurityDeletionFence> accountSecurityDeletionFence) {
         return BeanSupplier.of(MultifactorAuthenticationTrustStorage.class)
             .when(CONDITION.given(applicationContext.getEnvironment()))
             .supply(() -> new RedisMultifactorAuthenticationTrustStorage(casProperties.getAuthn().getMfa().getTrusted(),
-                mfaTrustCipherExecutor, redisMfaTrustedAuthnTemplate, keyGenerationStrategy))
+                mfaTrustCipherExecutor, redisMfaTrustedAuthnTemplate, keyGenerationStrategy,
+                accountSecurityDeletionFence.getObject()))
             .otherwiseProxy()
             .get();
+    }
+
+    @Bean(name = "trustedMfaRedisAccountSecurityStore")
+    @ConditionalOnProperty(prefix = "cas.authn.mfa.trusted.redis", name = "enabled",
+        havingValue = "true", matchIfMissing = true)
+    public RedisAccountSecurityStore trustedMfaRedisAccountSecurityStore(
+        @Qualifier(MultifactorAuthenticationTrustStorage.BEAN_NAME)
+        final MultifactorAuthenticationTrustStorage trustStorage) {
+        if (trustStorage instanceof final RedisAccountSecurityStore store) {
+            return store;
+        }
+        throw new IllegalStateException(
+            "Trusted-MFA Redis storage does not expose account-security deletion authority");
     }
 }
