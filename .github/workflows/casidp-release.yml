@@ -73,7 +73,7 @@ jobs:
           distribution: jdkfile
           java-version: '25.0.4+7'
           architecture: x64
-          jdkFile: ${{ runner.temp }}/amazon-corretto-25.0.4.7.1-linux-x64.tar.gz
+          jdk-file: ${{ runner.temp }}/amazon-corretto-25.0.4.7.1-linux-x64.tar.gz
 
       - name: Verify the exact Java runtime
         run: |

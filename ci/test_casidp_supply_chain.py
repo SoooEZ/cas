@@ -1361,6 +1361,10 @@ class PublicationCandidateVerificationTests(unittest.TestCase):
             "GITHUB_REPOSITORY": "SoooEZ/cas",
             "GITHUB_SHA": self.commit,
             "GITHUB_TOKEN": self.token,
+            "GITHUB_WORKFLOW_REF": (
+                "SoooEZ/cas/.github/workflows/casidp-release.yml"
+                f"@refs/tags/v{self.version}"
+            ),
             "PGP_PASSPHRASE": "",
             "PGP_PRIVATE_KEY": "",
         }

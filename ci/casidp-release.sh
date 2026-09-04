@@ -1073,7 +1073,7 @@ require(
         "distribution": "jdkfile",
         "java-version": "'25.0.4+7'",
         "architecture": "x64",
-        "jdkFile": (
+        "jdk-file": (
             "${{ runner.temp }}/amazon-corretto-25.0.4.7.1-linux-x64.tar.gz"
         ),
     },
@@ -1709,7 +1709,7 @@ for required in (
     "          distribution: jdkfile",
     "          java-version: '25.0.4+7'",
     "          architecture: x64",
-    "          jdkFile: ${{ runner.temp }}/amazon-corretto-25.0.4.7.1-linux-x64.tar.gz",
+    "          jdk-file: ${{ runner.temp }}/amazon-corretto-25.0.4.7.1-linux-x64.tar.gz",
     "          cache-read-only: true",
     "          validate-wrappers: true",
     "        run: ./ci/casidp-release.sh --ci",
