@@ -68,6 +68,7 @@ usage() {
         '' \
         'Modes (exactly one):' \
         '  --dry-run       Build/audit an unsigned local Maven candidate (default).' \
+        '  --ci            Build/test one unsigned source commit without staging a release.' \
         '  --sign-existing Sign and re-audit existing unsigned staged bytes; never run Gradle.' \
         '  --publish       Directly upload an existing signed candidate; never run Gradle.' \
         '  --verify-only   Validate source metadata and the complete Gradle publication task graph.' \
@@ -94,6 +95,7 @@ set_mode() {
 while (($#)); do
     case "$1" in
         --dry-run) set_mode 'dry-run' ;;
+        --ci) set_mode 'ci' ;;
         --sign-existing) set_mode 'sign-existing' ;;
         --publish) set_mode 'publish' ;;
         --verify-only) set_mode 'verify-only' ;;
@@ -106,7 +108,7 @@ while (($#)); do
     shift
 done
 
-if [[ ${MODE} == dry-run ]]; then
+if [[ ${MODE} == dry-run || ${MODE} == ci ]]; then
     UNSIGNED=true
 fi
 
@@ -116,7 +118,7 @@ if [[ ${MODE} == sign-existing || ${MODE} == publish ]]; then
     [[ ${UNSIGNED} == false ]] || die '--unsigned is forbidden for a real release'
 fi
 
-if [[ ${MODE} == dry-run || ${MODE} == verify-only ]]; then
+if [[ ${MODE} == dry-run || ${MODE} == verify-only || ${MODE} == ci ]]; then
     [[ -z ${PGP_PRIVATE_KEY:-} && -z ${PGP_PASSPHRASE:-} \
         && -z ${CASIDP_SIGNING_FINGERPRINT:-} \
         && -z ${CASIDP_TRUSTED_SIGNING_FINGERPRINT:-} \
@@ -475,23 +477,41 @@ validate_metadata() {
             || die "Requested ref ${CASIDP_RELEASE_TAG} is not exact release tag ${RELEASE_TAG}"
     fi
     if [[ ${GITHUB_ACTIONS:-false} == true ]]; then
-        [[ ${GITHUB_EVENT_NAME:-} == workflow_dispatch ]] \
-            || die 'GitHub releases must be started by workflow_dispatch'
-        [[ ${GITHUB_REF_TYPE:-} == tag ]] \
-            || die 'GitHub releases must be dispatched from the signed release tag'
-        [[ ${GITHUB_REF_NAME:-} == "${RELEASE_TAG}" ]] \
-            || die "GitHub ref ${GITHUB_REF_NAME:-<none>} is not exact release tag ${RELEASE_TAG}"
-        [[ ${GITHUB_REF:-} == "refs/tags/${RELEASE_TAG}" ]] \
-            || die "GitHub ref ${GITHUB_REF:-<none>} is not refs/tags/${RELEASE_TAG}"
-        [[ ${CASIDP_RELEASE_TAG:-} == "${GITHUB_REF_NAME}" ]] \
-            || die 'Workflow release_tag is not the selected GitHub tag'
         [[ ${GITHUB_SHA:-} == "${FORK_COMMIT}" ]] \
             || die "Checked-out commit ${FORK_COMMIT} is not trusted workflow SHA ${GITHUB_SHA:-<none>}"
-        [[ ${GITHUB_WORKFLOW_SHA:-} == "${FORK_COMMIT}" ]] \
-            || die "Workflow commit ${GITHUB_WORKFLOW_SHA:-<none>} is not release commit ${FORK_COMMIT}"
-        [[ ${GITHUB_WORKFLOW_REF:-} \
-            == "${EXPECTED_GITHUB_REPOSITORY}/.github/workflows/casidp-release.yml@refs/tags/${RELEASE_TAG}" ]] \
-            || die "Workflow ref ${GITHUB_WORKFLOW_REF:-<none>} is not the release-tag workflow"
+        if [[ ${MODE} == ci ]]; then
+            [[ ${GITHUB_EVENT_NAME:-} =~ ^(push|pull_request|workflow_dispatch)$ ]] \
+                || die 'Fork CI accepts only push, pull_request, or workflow_dispatch events'
+            [[ ${GITHUB_REF_TYPE:-} == branch ]] \
+                || die 'Fork CI must validate a branch or pull-request merge ref'
+            case "${GITHUB_REF:-}" in
+                refs/heads/*|refs/pull/*/merge) ;;
+                *) die "Fork CI ref ${GITHUB_REF:-<none>} is not a branch or pull-request merge ref" ;;
+            esac
+            [[ ${GITHUB_WORKFLOW:-} == 'CAS-IDP Fork CI' ]] \
+                || die "Unexpected fork CI workflow ${GITHUB_WORKFLOW:-<none>}"
+            [[ ${GITHUB_WORKFLOW_REF:-} \
+                == "${EXPECTED_GITHUB_REPOSITORY}/.github/workflows/casidp-ci.yml@"* ]] \
+                || die "Workflow ref ${GITHUB_WORKFLOW_REF:-<none>} is not the fork CI workflow"
+            [[ -z ${CASIDP_RELEASE_TAG:-} ]] \
+                || die 'Fork CI must not receive a release tag'
+        else
+            [[ ${GITHUB_EVENT_NAME:-} == workflow_dispatch ]] \
+                || die 'GitHub releases must be started by workflow_dispatch'
+            [[ ${GITHUB_REF_TYPE:-} == tag ]] \
+                || die 'GitHub releases must be dispatched from the signed release tag'
+            [[ ${GITHUB_REF_NAME:-} == "${RELEASE_TAG}" ]] \
+                || die "GitHub ref ${GITHUB_REF_NAME:-<none>} is not exact release tag ${RELEASE_TAG}"
+            [[ ${GITHUB_REF:-} == "refs/tags/${RELEASE_TAG}" ]] \
+                || die "GitHub ref ${GITHUB_REF:-<none>} is not refs/tags/${RELEASE_TAG}"
+            [[ ${CASIDP_RELEASE_TAG:-} == "${GITHUB_REF_NAME}" ]] \
+                || die 'Workflow release_tag is not the selected GitHub tag'
+            [[ ${GITHUB_WORKFLOW_SHA:-} == "${FORK_COMMIT}" ]] \
+                || die "Workflow commit ${GITHUB_WORKFLOW_SHA:-<none>} is not release commit ${FORK_COMMIT}"
+            [[ ${GITHUB_WORKFLOW_REF:-} \
+                == "${EXPECTED_GITHUB_REPOSITORY}/.github/workflows/casidp-release.yml@refs/tags/${RELEASE_TAG}" ]] \
+                || die "Workflow ref ${GITHUB_WORKFLOW_REF:-<none>} is not the release-tag workflow"
+        fi
     fi
 
     git cat-file -e "${UPSTREAM_COMMIT}^{commit}" \
@@ -515,6 +535,10 @@ validate_metadata() {
 }
 
 verify_release_tag() {
+    if [[ ${MODE} == ci ]]; then
+        printf 'Fork CI is source validation only; no release tag is consumed.\n'
+        return
+    fi
     if [[ ${SKIP_TAG_VERIFICATION} == true ]]; then
         printf 'WARNING: signed tag verification was explicitly skipped for a local %s.\n' "${MODE}" >&2
         return
@@ -550,26 +574,31 @@ verify_release_tag() {
 
 verify_workflow_boundary() {
     local workflow='.github/workflows/casidp-release.yml'
+    local ci_workflow='.github/workflows/casidp-ci.yml'
+    local reviewed_workflow
     local lock_update_flag selective_lock_update_flag verification_write_flag verification_export_flag
     printf -v lock_update_flag '%s%s' '--write' '-locks'
     printf -v selective_lock_update_flag '%s%s' '--update' '-locks'
     printf -v verification_write_flag '%s%s' '--write-verification' '-metadata'
     printf -v verification_export_flag '%s%s' '--export' '-keys'
-    [[ -f ${workflow} ]] || die "Missing ${workflow}"
-    if grep -nE '^[[:space:]]*uses:[[:space:]]*[^#[:space:]]+@' "${workflow}" \
-        | grep -vE '@[0-9a-f]{40}([[:space:]]|$)'; then
-        die 'Every third-party action in the CAS-IDP workflow must be pinned to a full commit SHA'
-    fi
-    ! grep -Eq '(^|[[:space:]/])ci/release\.sh([[:space:]]|$)' "${workflow}" \
-        || die 'CAS-IDP workflow must never call the upstream release script'
+    for reviewed_workflow in "${workflow}" "${ci_workflow}"; do
+        [[ -f ${reviewed_workflow} ]] || die "Missing ${reviewed_workflow}"
+        if grep -nE '^[[:space:]]*uses:[[:space:]]*[^#[:space:]]+@' "${reviewed_workflow}" \
+            | grep -vE '@[0-9a-f]{40}([[:space:]]|$)'; then
+            die 'Every third-party action in a CAS-IDP workflow must be pinned to a full commit SHA'
+        fi
+        ! grep -Eq '(^|[[:space:]/])ci/release\.sh([[:space:]]|$)' "${reviewed_workflow}" \
+            || die 'CAS-IDP workflows must never call the upstream release script'
+    done
     local forbidden_mutation_flag
     for forbidden_mutation_flag in \
         "${lock_update_flag}" \
         "${selective_lock_update_flag}" \
         "${verification_write_flag}" \
         "${verification_export_flag}"; do
-        if grep -Fq -- "${forbidden_mutation_flag}" "${workflow}" 'ci/casidp-release.sh'; then
-            die 'The release workflow and driver must never mutate dependency trust inputs'
+        if grep -Fq -- "${forbidden_mutation_flag}" \
+            "${workflow}" "${ci_workflow}" 'ci/casidp-release.sh'; then
+            die 'CAS-IDP workflows and the release driver must never mutate dependency trust inputs'
         fi
     done
     python3 - "${workflow}" "${EXPECTED_GITHUB_REPOSITORY}" <<'PY'
@@ -1590,6 +1619,118 @@ require(
     "publication evidence upload paths are not on the reviewed allowlist",
 )
 PY
+    python3 - "${ci_workflow}" "${EXPECTED_GITHUB_REPOSITORY}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+workflow = Path(sys.argv[1])
+repository = sys.argv[2]
+text = workflow.read_text(encoding="utf-8")
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise SystemExit(f"Unsafe CAS-IDP CI workflow: {message}")
+
+
+require("\t" not in text, "tabs are forbidden")
+require(
+    re.findall(r"(?m)^([A-Za-z0-9_-]+):", text)
+    == ["name", "on", "permissions", "concurrency", "jobs"],
+    "top-level mappings are not on the reviewed allowlist",
+)
+require(text.splitlines()[0] == "name: CAS-IDP Fork CI", "workflow name must be exact")
+on_parts = text.split("\non:\n")
+require(len(on_parts) == 2, "must contain exactly one top-level on mapping")
+on_block, separator, _ = on_parts[1].partition("\npermissions:\n")
+require(separator, "trigger mapping must be followed by permissions")
+require(
+    re.findall(r"(?m)^  ([a-z_]+):", on_block)
+    == ["push", "pull_request", "workflow_dispatch"],
+    "triggers must be exactly push, pull_request, and workflow_dispatch",
+)
+required_branch = "      - casidp/issuance-generation-fence-8.0.1"
+require(on_block.splitlines().count(required_branch) == 2, "CI branch boundary is not exact")
+require(
+    text.count("permissions:\n  contents: read") == 1
+    and text.count("    permissions:\n      contents: read") == 1,
+    "workflow and job permissions must both be contents: read only",
+)
+require(
+    not any(
+        value in text
+        for value in (
+            ": write",
+            "pull_request_target:",
+            "schedule:",
+            "environment:",
+            "${{ secrets.",
+            "${{ vars.",
+            "github.token",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "toJSON(github)",
+        )
+    ),
+    "CI may not receive write permissions, release environments, or secrets",
+)
+jobs = text.split("\njobs:\n", 1)[1]
+require(
+    re.findall(r"(?m)^  ([A-Za-z0-9_-]+):$", jobs) == ["verify"],
+    "CI must contain exactly one verify job",
+)
+require(
+    jobs.count(f"    if: ${{{{ github.repository == '{repository}' }}}}") == 1,
+    "verify job must use the exact fork repository guard",
+)
+require(jobs.count("    runs-on: ubuntu-24.04") == 1, "runner image must be exact")
+require(jobs.count("    timeout-minutes: 360") == 1, "job timeout must be exact")
+require(
+    text.count("redis:7.4.7-alpine@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf")
+    == 1,
+    "Redis service image must be digest pinned",
+)
+expected_actions = [
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+    "actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0",
+    "gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+]
+require(
+    re.findall(r"(?m)^\s+uses: (.+)$", text) == expected_actions,
+    "action sequence or immutable action identities changed",
+)
+for required in (
+    "          ref: ${{ github.sha }}",
+    "          fetch-depth: 0",
+    "          fetch-tags: true",
+    "          persist-credentials: false",
+    "          distribution: jdkfile",
+    "          java-version: '25.0.4+7'",
+    "          architecture: x64",
+    "          jdkFile: ${{ runner.temp }}/amazon-corretto-25.0.4.7.1-linux-x64.tar.gz",
+    "          cache-read-only: true",
+    "          validate-wrappers: true",
+    "        run: ./ci/casidp-release.sh --ci",
+    "        if: ${{ always() }}",
+    "          include-hidden-files: true",
+):
+    require(text.splitlines().count(required) == 1, f"missing exact contract line: {required}")
+require(
+    text.count("./ci/casidp-release.sh --ci") == 1
+    and all(
+        option not in text
+        for option in ("--dry-run", "--verify-only", "--sign-existing", "--publish")
+    ),
+    "CI must invoke exactly one non-publishing driver mode",
+)
+for image in (
+    "koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d",
+    "rhysd/actionlint@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9",
+):
+    require(text.count(image) == 1, f"lint image is not exact: {image}")
+PY
     grep -Fq "github.repository == 'apereo/cas'" '.github/workflows/release.yml' \
         || die 'Official release workflow is not guarded against fork execution'
     grep -Fq "github.repository == 'apereo/cas'" '.github/workflows/publish.yml' \
@@ -1740,6 +1881,8 @@ build_candidate() {
     # binds task options to the preceding task rather than to the invocation.
     # Combining filters with `build` would also make the full-build evidence
     # ambiguous, so the unfiltered build remains a separate invocation.
+    # The nested JVM class selector intentionally keeps its dollar sign literal.
+    # shellcheck disable=SC2016
     ./gradlew "${GRADLE_COMMON_ARGUMENTS[@]}" \
         :api:cas-server-core-api-protocol:testCAS \
         --tests org.apereo.cas.protocol.ProtocolFinalResponsePolicyTests \
@@ -1786,6 +1929,8 @@ build_candidate() {
         --tests org.apereo.cas.webauthn.RedisWebAuthnCredentialRepositoryTests \
         --parallel
     verify_supply_chain_inputs_unchanged
+    # The nested JVM class result path intentionally keeps its dollar sign literal.
+    # shellcheck disable=SC2016
     python3 "${AUDITOR}" audit-test-results \
         --result 'api/cas-server-core-api-protocol/build/test-results/testCAS/TEST-org.apereo.cas.protocol.ProtocolFinalResponsePolicyTests.xml:6' \
         --result 'api/cas-server-core-api-protocol/build/test-results/testCAS/TEST-org.apereo.cas.protocol.ProtocolFinalResponseBundleTests.xml:10' \
@@ -2173,6 +2318,14 @@ verify_release_tag
 verify_workflow_boundary
 
 case "${MODE}" in
+    ci)
+        require_redis_test_service
+        reset_release_directory
+        audit_publication_graph "$(staging_url)"
+        build_candidate
+        normalize_resolved_sbom
+        printf 'CAS-IDP fork CI source, tests, SBOM, and publication task graph are valid.\n'
+        ;;
     verify-only)
         reset_release_directory
         audit_publication_graph "$(staging_url)"
