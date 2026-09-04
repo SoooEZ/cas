@@ -1044,7 +1044,7 @@ require(
         "distribution": "jdkfile",
         "java-version": "'25.0.4+7'",
         "architecture": "x64",
-        "jdk-file": (
+        "jdkFile": (
             "${{ runner.temp }}/amazon-corretto-25.0.4.7.1-linux-x64.tar.gz"
         ),
     },
@@ -1425,6 +1425,7 @@ require(
             "--local-user",
             "gpg ",
             "java-version:",
+            "jdkFile:",
             "jdk-file:",
         )
     ),
